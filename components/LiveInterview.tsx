@@ -9,7 +9,7 @@ import type { Job, PlanQuestion, Turn } from "@/lib/types";
 
 type Phase = "idle" | "speaking" | "listening" | "thinking" | "ended";
 
-const PAUSE_MS = 850; // end-of-speech pause (PRD: ~0.7s)
+const PAUSE_MS = 700; // end-of-speech pause (PRD: ~0.7s)
 
 export function LiveInterview({
   job, plan, onStart, onFinished,
@@ -27,7 +27,7 @@ export function LiveInterview({
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceURI, setVoiceURI] = useState("");
   const [natural, setNatural] = useState(false);
-  const [headphones, setHeadphones] = useState(false);
+  const [headphones, setHeadphones] = useState(true); // allow interrupting the AI (on by default)
   const [err, setErr] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
@@ -46,7 +46,9 @@ export function LiveInterview({
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const nudged = useRef(false);
   const phaseRef = useRef<Phase>("idle");
-  const hpRef = useRef(false);
+  const hpRef = useRef(true);
+  const alwaysOn = useRef(false); // server STT keeps the mic live the whole call
+  const inflight = useRef<AbortController | null>(null);
   const finished = useRef(false);
   const failures = useRef(0);
   const turnId = useRef(0);
@@ -56,7 +58,11 @@ export function LiveInterview({
   canVoiceRef.current = canVoice;
   useEffect(() => { serverSttAvailable().then(setServerStt); }, []);
 
-  const setP = (p: Phase) => { phaseRef.current = p; setPhase(p); };
+  const setP = (p: Phase) => {
+    phaseRef.current = p;
+    setPhase(p);
+    listener.current?.setSpeaking?.(p === "speaking");
+  };
   useEffect(() => { hpRef.current = headphones; }, [headphones]);
   useEffect(() => { speaker.current?.setRate(rate); }, [rate]);
   useEffect(() => { if (voiceURI) speaker.current?.setVoice(voiceURI); }, [voiceURI]);
@@ -106,7 +112,7 @@ export function LiveInterview({
     setLive("");
     setHeard(false);
     setP("listening");
-    if (canVoice) listener.current?.start();
+    if (canVoice) listener.current?.start(); // no-op when already live
     clearTimeout(silenceTimer.current);
     if (!nudged.current) silenceTimer.current = setTimeout(nudge, 10000);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,7 +131,7 @@ export function LiveInterview({
     if (phaseRef.current !== "listening" || finished.current) return;
     nudged.current = true;
     const myTurn = ++turnId.current;
-    listener.current?.stop();
+    pauseMic();
     setP("speaking");
     armBargeIn();
     speaker.current!.enqueue("Take your time. Would you like me to repeat the question?");
@@ -139,22 +145,38 @@ export function LiveInterview({
     beginListening();
   }, [beginListening]);
 
+  const pauseMic = () => { if (!alwaysOn.current) listener.current?.stop(); };
   // With headphones, keep the mic armed while the AI talks so the candidate can talk over it.
   const armBargeIn = () => { if (hpRef.current && canVoiceRef.current) listener.current?.start(); };
+
+  // Speech arrived while we were thinking: merge it into the previous answer and re-ask.
+  const mergeAndResubmit = (t: string) => {
+    inflight.current?.abort();
+    turnId.current++;
+    while (turns.current.length && turns.current[turns.current.length - 1].speaker === "ai" && !turns.current[turns.current.length - 1].text) turns.current.pop();
+    const last = turns.current[turns.current.length - 1];
+    let prev = "";
+    if (last?.speaker === "candidate") { prev = last.text; turns.current.pop(); }
+    sync();
+    setP("listening");
+    submit(prev ? `${prev} ${t}` : t);
+  };
 
   const submit = useCallback(async (text: string) => {
     if (phaseRef.current === "thinking" || finished.current) return;
     const myTurn = ++turnId.current;
     clearTimeout(silenceTimer.current);
-    listener.current?.stop();
-    speaker.current?.cancel();
+    pauseMic();
     nudged.current = false;
     addTurn("candidate", text);
     setLive("");
     setP("thinking");
     const elapsedSec = (Date.now() - t0.current) / 1000;
     try {
+      const ac = new AbortController();
+      inflight.current = ac;
       const r = await fetch("/api/turn", {
+        signal: ac.signal,
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ job, plan, turns: turns.current, elapsedSec }),
@@ -172,7 +194,7 @@ export function LiveInterview({
       const queueSentences = (final: boolean) => {
         const v = visible();
         const rest = v.slice(spoken);
-        const m = rest.match(/^[\s\S]*?[.!?]["')\]]?(?=\s|$)/);
+        const m = rest.match(/^[\s\S]*?[.!?]["')\]]?(?=\s|$)/) ?? (!started ? rest.match(/^[\s\S]{18,}?[,;:](?=\s)/) : null);
         const chunk = m ? m[0] : final ? rest : "";
         if (!chunk.trim()) return false;
         spoken += chunk.length;
@@ -249,10 +271,19 @@ export function LiveInterview({
           clearTimeout(silenceTimer.current);
           if (phaseRef.current === "speaking" && hpRef.current) interrupt();
         },
+        onSegmentEnd: () => { if (phaseRef.current === "listening") speaker.current?.playFiller(); },
         onTranscribing: (b) => { setTranscribing(b); if (!b) setLive((l) => (l === "…" ? "" : l)); },
-        onFinal: (t) => { if (phaseRef.current === "listening") submit(t); },
+        onFinal: (t) => {
+          const ph = phaseRef.current;
+          if (ph === "listening") submit(t);
+          else if (ph === "thinking") mergeAndResubmit(t);
+          else if (ph === "speaking") { interrupt(); submit(t); }
+        },
         onError: setErr,
       });
+      alwaysOn.current = true;
+      listener.current.start();
+      speaker.current?.loadFillers();
     } else if (sttSupported()) {
       listener.current = createListener({
         pauseMs: PAUSE_MS,
@@ -332,7 +363,7 @@ export function LiveInterview({
             onClick={() => {
               if (phase === "speaking") interrupt();
               else if (phase === "listening" && live) listener.current?.commit();
-              else if (phase === "listening" && canVoice) { listener.current?.stop(); listener.current?.start(); }
+              else if (phase === "listening" && canVoice && !alwaysOn.current) { listener.current?.stop(); listener.current?.start(); }
             }}
           />
           <p className="mt-6 text-lg font-medium" aria-live="polite">{status[phase]}</p>
@@ -380,7 +411,7 @@ export function LiveInterview({
             {[0.9, 1, 1.05, 1.2, 1.35].map((r) => <option key={r} value={r}>{r}×</option>)}
           </select>
         </label>
-        {canVoice && <label className="flex items-center gap-2"><input type="checkbox" checked={headphones} onChange={(e) => setHeadphones(e.target.checked)} /> I&apos;m wearing headphones (talk over the AI)</label>}
+        {canVoice && <label className="flex items-center gap-2"><input type="checkbox" checked={headphones} onChange={(e) => setHeadphones(e.target.checked)} /> Let me interrupt the AI (best with headphones)</label>}
         <button className="ml-auto rounded-lg bg-red-500/90 px-4 py-1.5 font-medium text-white hover:bg-red-500" onClick={() => confirm("End the interview now?") && finish(true)}>End interview</button>
       </div>
     </div>

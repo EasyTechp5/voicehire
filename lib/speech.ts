@@ -34,6 +34,8 @@ export type Speaker = {
   idle: () => Promise<void>;
   setRate: (r: number) => void;
   setVoice: (uri: string) => void;
+  playFiller: () => void;
+  loadFillers: () => Promise<void>;
   readonly natural: boolean;
 };
 
@@ -58,6 +60,10 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
   let waiters: (() => void)[] = [];
   let chain: Promise<void> = Promise.resolve();
   const el = typeof Audio !== "undefined" ? new Audio() : null;
+  const fillerEl = typeof Audio !== "undefined" ? new Audio() : null;
+  const fillers: string[] = [];
+  let fillerP: Promise<void> = Promise.resolve();
+  let fi = 0;
   if (el && useServer) { el.src = SILENT_WAV; el.play().catch(() => {}); } // unlock autoplay on user gesture
 
   const done = () => {
@@ -99,6 +105,19 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
 
   return {
     get natural() { return useServer; },
+    async loadFillers() {
+      if (!useServer) return;
+      for (const t of ["Mm-hm.", "Okay.", "Right.", "I see."]) {
+        const u = await fetchAudio(t);
+        if (u) fillers.push(u);
+      }
+    },
+    playFiller() {
+      if (!useServer || !fillerEl || !fillers.length) return;
+      fillerEl.src = fillers[fi++ % fillers.length];
+      fillerP = new Promise<void>((res) => { fillerEl.onended = fillerEl.onerror = () => res(); });
+      fillerEl.play().catch(() => {});
+    },
     setRate: (r) => { rate = r; if (el) el.playbackRate = r; },
     setVoice: (u) => { voiceURI = u; },
     enqueue(text) {
@@ -108,6 +127,7 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
         const urlP = fetchAudio(text); // start fetching immediately, play in order
         chain = chain.then(async () => {
           const url = await urlP;
+          await fillerP; // let a short "Mm-hm" finish before the real reply
           if (myGen !== gen) { if (url) URL.revokeObjectURL(url); return done(); }
           if (!url) { useServer = false; await browserSpeak(text, myGen); return done(); }
           await new Promise<void>((res) => {
@@ -127,6 +147,8 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
       gen++;
       speechSynthesis.cancel();
       if (el) { el.onended = null; el.pause(); el.removeAttribute("src"); }
+      if (fillerEl) { fillerEl.onended = null; fillerEl.pause(); }
+      fillerP = Promise.resolve();
       chain = Promise.resolve();
       pending = 0;
       waiters.forEach((w) => w());
@@ -137,7 +159,7 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
 }
 
 // ---------- Listener ----------
-export type Listener = { start: () => void; stop: () => void; commit: () => void };
+export type Listener = { start: () => void; stop: () => void; commit: () => void; setSpeaking?: (b: boolean) => void };
 
 /**
  * Continuous recognition. `onInterim` streams live text; `onFinal` fires once the candidate pauses

@@ -39,10 +39,11 @@ export function createVadListener(opts: {
   stream: MediaStream;
   pauseMs: number;
   onSpeechStart: () => void;
+  onSegmentEnd?: () => void;
   onFinal: (text: string) => void;
   onTranscribing?: (busy: boolean) => void;
   onError?: (e: string) => void;
-}): Listener & { destroy: () => void } {
+}): Listener & { destroy: () => void; setSpeaking: (b: boolean) => void } {
   const ctx = new AudioContext();
   const src = ctx.createMediaStreamSource(opts.stream);
   const proc = ctx.createScriptProcessor(2048, 1, 1);
@@ -54,6 +55,7 @@ export function createVadListener(opts: {
   const frameMs = (2048 / ctx.sampleRate) * 1000;
 
   let active = false;
+  let speaking = false; // AI audio is playing: be stricter so we don't hear ourselves
   let floor = 0.006; // adaptive noise floor
   let calib = 0, calibN = 0;
   let inSpeech = false, voiced = 0, hot = 0, silentMs = 0, segMs = 0;
@@ -81,7 +83,7 @@ export function createVadListener(opts: {
     const frames = seg;
     const enough = voiced * frameMs >= 300;
     reset();
-    if (enough) send(frames, epoch);
+    if (enough) { opts.onSegmentEnd?.(); send(frames, epoch); }
   };
 
   proc.onaudioprocess = (e) => {
@@ -92,7 +94,7 @@ export function createVadListener(opts: {
     const rms = Math.sqrt(s / copy.length);
 
     if (calibN < 14) { calib += rms; calibN++; if (calibN === 14) floor = Math.max(0.004, calib / calibN); return; }
-    const thr = Math.max(0.018, floor * 3.2);
+    const thr = Math.max(0.012, floor * 2.8) * (speaking ? 2.4 : 1);
 
     if (!active) { reset(); return; }
     const loud = rms > thr;
@@ -100,9 +102,9 @@ export function createVadListener(opts: {
     if (!inSpeech) {
       pre.push(copy);
       if (pre.length > 9) pre.shift();
-      if (!loud) floor = floor * 0.97 + rms * 0.03;
+      if (!loud && !speaking) floor = floor * 0.97 + rms * 0.03;
       hot = loud ? hot + 1 : 0;
-      if (hot >= 3) { // ~130ms of sustained sound
+      if (hot >= (speaking ? 8 : 3)) { // ~130ms (or ~350ms over the AI) of sustained sound
         inSpeech = true;
         seg = [...pre];
         pre.length = 0;
@@ -119,7 +121,8 @@ export function createVadListener(opts: {
   };
 
   return {
-    start() { if (ctx.state === "suspended") ctx.resume(); reset(); pre.length = 0; epoch++; active = true; },
+    start() { if (ctx.state === "suspended") ctx.resume(); if (active) return; reset(); pre.length = 0; active = true; },
+    setSpeaking(b) { speaking = b; },
     stop() { active = false; epoch++; reset(); },
     commit() { if (inSpeech) endSegment(); },
     destroy() { active = false; epoch++; try { proc.disconnect(); src.disconnect(); ctx.close(); } catch {} },
