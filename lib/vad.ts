@@ -35,6 +35,14 @@ function toWav16k(frames: Float32Array[], inRate: number): Blob {
   return new Blob([h, pcm], { type: "audio/wav" });
 }
 
+export type VadListener = Listener & {
+  destroy: () => void;
+  setSpeaking: (b: boolean) => void;
+  /** ms since the last audio frame was processed (a large value means the mic pipeline stalled). */
+  sinceFrame: () => number;
+  revive: () => void;
+};
+
 export function createVadListener(opts: {
   stream: MediaStream;
   pauseMs: number;
@@ -43,7 +51,7 @@ export function createVadListener(opts: {
   onFinal: (text: string) => void;
   onTranscribing?: (busy: boolean) => void;
   onError?: (e: string) => void;
-}): Listener & { destroy: () => void; setSpeaking: (b: boolean) => void } {
+}): VadListener {
   const ctx = new AudioContext();
   const src = ctx.createMediaStreamSource(opts.stream);
   const proc = ctx.createScriptProcessor(2048, 1, 1);
@@ -53,27 +61,37 @@ export function createVadListener(opts: {
   proc.connect(mute);
   mute.connect(ctx.destination);
   const frameMs = (2048 / ctx.sampleRate) * 1000;
+  ctx.onstatechange = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
 
   let active = false;
   let speaking = false; // AI audio is playing: be stricter so we don't hear ourselves
-  let floor = 0.006; // adaptive noise floor
+  let floor = 0.006; // noise floor (lower envelope of the signal)
   let calib = 0, calibN = 0;
   let inSpeech = false, voiced = 0, hot = 0, silentMs = 0, segMs = 0;
   let seg: Float32Array[] = [];
   const pre: Float32Array[] = [];
   let epoch = 0;
+  let lastFrame = Date.now();
 
   const reset = () => { inSpeech = false; voiced = 0; hot = 0; silentMs = 0; segMs = 0; seg = []; };
+
+  async function transcribe(wav: Blob): Promise<string> {
+    const r = await fetch("/api/stt", { method: "POST", body: wav });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(r.status === 429 ? "Transcription is rate-limited (429). Please wait a few seconds." : j.error || "Transcription failed");
+    return j.text || "";
+  }
 
   async function send(frames: Float32Array[], myEpoch: number) {
     opts.onTranscribing?.(true);
     try {
-      const r = await fetch("/api/stt", { method: "POST", body: toWav16k(frames, ctx.sampleRate) });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "stt");
-      if (myEpoch === epoch && j.text) opts.onFinal(j.text);
-    } catch {
-      opts.onError?.("Couldn't transcribe that. Please try again.");
+      const wav = toWav16k(frames, ctx.sampleRate);
+      let text: string;
+      try { text = await transcribe(wav); }
+      catch (e) { await new Promise((r) => setTimeout(r, 700)); text = await transcribe(wav).catch(() => { throw e; }); } // one retry
+      if (myEpoch === epoch && text) opts.onFinal(text);
+    } catch (e) {
+      opts.onError?.((e as Error).message || "Couldn't transcribe that. Please try again.");
     } finally {
       opts.onTranscribing?.(false);
     }
@@ -87,13 +105,20 @@ export function createVadListener(opts: {
   };
 
   proc.onaudioprocess = (e) => {
+    lastFrame = Date.now();
     const data = e.inputBuffer.getChannelData(0);
     const copy = new Float32Array(data);
     let s = 0;
     for (let i = 0; i < copy.length; i++) s += copy[i] * copy[i];
     const rms = Math.sqrt(s / copy.length);
 
-    if (calibN < 14) { calib += rms; calibN++; if (calibN === 14) floor = Math.max(0.004, calib / calibN); return; }
+    if (calibN < 14) { calib += rms; calibN++; if (calibN === 14) floor = Math.max(0.004, Math.min(0.02, calib / calibN)); return; }
+    // Track the lower envelope: drop fast to quieter frames, creep up slowly, never ratchet up on speech.
+    if (!speaking) {
+      if (rms < floor) floor = floor * 0.6 + rms * 0.4;
+      else if (!inSpeech && rms < floor * 1.6) floor += (rms - floor) * 0.01;
+      floor = Math.max(0.003, Math.min(0.02, floor));
+    }
     const thr = Math.max(0.012, floor * 2.8) * (speaking ? 2.4 : 1);
 
     if (!active) { reset(); return; }
@@ -102,7 +127,6 @@ export function createVadListener(opts: {
     if (!inSpeech) {
       pre.push(copy);
       if (pre.length > 9) pre.shift();
-      if (!loud && !speaking) floor = floor * 0.97 + rms * 0.03;
       hot = loud ? hot + 1 : 0;
       if (hot >= (speaking ? 8 : 3)) { // ~130ms (or ~350ms over the AI) of sustained sound
         inSpeech = true;
@@ -121,10 +145,12 @@ export function createVadListener(opts: {
   };
 
   return {
-    start() { if (ctx.state === "suspended") ctx.resume(); if (active) return; reset(); pre.length = 0; active = true; },
-    setSpeaking(b) { speaking = b; },
+    start() { if (ctx.state === "suspended") ctx.resume().catch(() => {}); if (active) return; reset(); pre.length = 0; active = true; },
     stop() { active = false; epoch++; reset(); },
+    setSpeaking(b) { speaking = b; },
     commit() { if (inSpeech) endSegment(); },
+    sinceFrame: () => Date.now() - lastFrame,
+    revive() { ctx.resume().catch(() => {}); },
     destroy() { active = false; epoch++; try { proc.disconnect(); src.disconnect(); ctx.close(); } catch {} },
   };
 }

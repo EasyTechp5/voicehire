@@ -51,7 +51,7 @@ export async function serverVoiceAvailable(): Promise<boolean> {
   }
 }
 
-export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: string }): Speaker {
+export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: string; onError?: (m: string) => void }): Speaker {
   let rate = opts.rate;
   let voiceURI = opts.voiceURI;
   let useServer = opts.server;
@@ -66,7 +66,9 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
   let fi = 0;
   if (el && useServer) { el.src = SILENT_WAV; el.play().catch(() => {}); } // unlock autoplay on user gesture
 
-  const done = () => {
+  // Only items from the current generation count, so a cancelled item finishing late can't corrupt the counter.
+  const done = (g: number = gen) => {
+    if (g !== gen) return;
     pending = Math.max(0, pending - 1);
     if (pending === 0) { waiters.forEach((w) => w()); waiters = []; }
   };
@@ -96,7 +98,11 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (!r.ok) throw new Error("tts");
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        opts.onError?.(r.status === 429 ? "Voice service is rate-limited (429): using the browser voice for now." : `${j.error || "Voice service error"}: using the browser voice for now.`);
+        return null;
+      }
       return URL.createObjectURL(await r.blob());
     } catch {
       return null;
@@ -107,7 +113,7 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
     get natural() { return useServer; },
     async loadFillers() {
       if (!useServer) return;
-      for (const t of ["Mm-hm.", "Okay.", "Right.", "I see."]) {
+      for (const t of ["Mm-hm.", "Okay."]) {
         const u = await fetchAudio(t);
         if (u) fillers.push(u);
       }
@@ -115,8 +121,12 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
     playFiller() {
       if (!useServer || !fillerEl || !fillers.length) return;
       fillerEl.src = fillers[fi++ % fillers.length];
-      fillerP = new Promise<void>((res) => { fillerEl.onended = fillerEl.onerror = () => res(); });
-      fillerEl.play().catch(() => {});
+      fillerP = new Promise<void>((res) => {
+        const guard = setTimeout(res, 2500);
+        const fin = () => { clearTimeout(guard); res(); };
+        fillerEl.onended = fillerEl.onerror = fin;
+        fillerEl.play().catch(fin);
+      });
     },
     setRate: (r) => { rate = r; if (el) el.playbackRate = r; },
     setVoice: (u) => { voiceURI = u; },
@@ -128,19 +138,21 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
         chain = chain.then(async () => {
           const url = await urlP;
           await fillerP; // let a short "Mm-hm" finish before the real reply
-          if (myGen !== gen) { if (url) URL.revokeObjectURL(url); return done(); }
-          if (!url) { useServer = false; await browserSpeak(text, myGen); return done(); }
+          if (myGen !== gen) { if (url) URL.revokeObjectURL(url); return done(myGen); }
+          if (!url) { await browserSpeak(text, myGen); return done(myGen); }
           await new Promise<void>((res) => {
             el.src = url;
             el.playbackRate = rate;
-            el.onended = el.onerror = () => res();
-            el.play().catch(() => res());
+            const guard = setTimeout(res, 20000);
+            const fin = () => { clearTimeout(guard); res(); };
+            el.onended = el.onerror = fin;
+            el.play().catch(fin);
           });
           URL.revokeObjectURL(url);
-          done();
+          done(myGen);
         });
       } else {
-        chain = chain.then(async () => { await browserSpeak(text, myGen); done(); });
+        chain = chain.then(async () => { await browserSpeak(text, myGen); done(myGen); });
       }
     },
     cancel() {

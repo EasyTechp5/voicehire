@@ -4,7 +4,7 @@ import {
   createListener, createSpeaker, englishVoices, onVoicesReady, serverVoiceAvailable, sttSupported,
   type Listener, type Speaker,
 } from "@/lib/speech";
-import { createVadListener, serverSttAvailable } from "@/lib/vad";
+import { createVadListener, serverSttAvailable, type VadListener } from "@/lib/vad";
 import type { Job, PlanQuestion, Turn } from "@/lib/types";
 
 type Phase = "idle" | "speaking" | "listening" | "thinking" | "ended";
@@ -49,6 +49,7 @@ export function LiveInterview({
   const hpRef = useRef(true);
   const alwaysOn = useRef(false); // server STT keeps the mic live the whole call
   const inflight = useRef<AbortController | null>(null);
+  const thinkingSince = useRef(0);
   const finished = useRef(false);
   const failures = useRef(0);
   const turnId = useRef(0);
@@ -171,6 +172,7 @@ export function LiveInterview({
     addTurn("candidate", text);
     setLive("");
     setP("thinking");
+    thinkingSince.current = Date.now();
     const elapsedSec = (Date.now() - t0.current) / 1000;
     try {
       const ac = new AbortController();
@@ -224,12 +226,40 @@ export function LiveInterview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job, plan, finish]);
 
+  // (Re)creates the always-on mic listener. Also used by the watchdog if the audio pipeline stalls.
+  function buildVad(s: MediaStream) {
+    (listener.current as VadListener | null)?.destroy?.();
+    const v = createVadListener({
+      stream: s,
+      pauseMs: 750,
+      onSpeechStart: () => {
+        setHeard(true);
+        setLive("…");
+        clearTimeout(silenceTimer.current);
+        if (phaseRef.current === "speaking" && hpRef.current) interrupt();
+      },
+      onSegmentEnd: () => { if (phaseRef.current === "listening") speaker.current?.playFiller(); },
+      onTranscribing: (b) => { setTranscribing(b); if (!b) setLive((l) => (l === "…" ? "" : l)); },
+      onFinal: (t) => {
+        setErr("");
+        const ph = phaseRef.current;
+        if (ph === "listening") submit(t);
+        else if (ph === "thinking") mergeAndResubmit(t);
+        else if (ph === "speaking") { interrupt(); submit(t); }
+      },
+      onError: setErr,
+    });
+    listener.current = v;
+    v.setSpeaking(phaseRef.current === "speaking");
+    v.start();
+  }
+
   async function begin() {
     setErr("");
     // Create the speaker inside the click handler so audio is allowed to play.
     const server = await serverVoiceAvailable();
     setNatural(server);
-    speaker.current = createSpeaker({ server, rate, voiceURI: voiceURI || undefined });
+    speaker.current = createSpeaker({ server, rate, voiceURI: voiceURI || undefined, onError: setErr });
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -262,27 +292,8 @@ export function LiveInterview({
     onStart();
     const useServer = serverStt === true && !!stream.current;
     if (useServer) {
-      listener.current = createVadListener({
-        stream: stream.current!,
-        pauseMs: 750,
-        onSpeechStart: () => {
-          setHeard(true);
-          setLive("…");
-          clearTimeout(silenceTimer.current);
-          if (phaseRef.current === "speaking" && hpRef.current) interrupt();
-        },
-        onSegmentEnd: () => { if (phaseRef.current === "listening") speaker.current?.playFiller(); },
-        onTranscribing: (b) => { setTranscribing(b); if (!b) setLive((l) => (l === "…" ? "" : l)); },
-        onFinal: (t) => {
-          const ph = phaseRef.current;
-          if (ph === "listening") submit(t);
-          else if (ph === "thinking") mergeAndResubmit(t);
-          else if (ph === "speaking") { interrupt(); submit(t); }
-        },
-        onError: setErr,
-      });
+      buildVad(stream.current!);
       alwaysOn.current = true;
-      listener.current.start();
       speaker.current?.loadFillers();
     } else if (sttSupported()) {
       listener.current = createListener({
@@ -305,6 +316,32 @@ export function LiveInterview({
     speaker.current.enqueue(greeting);
     thenListen(myTurn);
   }
+
+  // Watchdog: revive the mic pipeline if it stalls, and never sit in "thinking" forever.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (finished.current) return;
+      const v = listener.current as VadListener | null;
+      if (alwaysOn.current && v?.sinceFrame && v.sinceFrame() > 4000 && stream.current) {
+        v.revive();
+        if (v.sinceFrame() > 6000) buildVad(stream.current);
+      }
+      const track = stream.current?.getAudioTracks()[0];
+      if (alwaysOn.current && track && track.readyState === "ended") {
+        navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+          .then((ns) => { stream.current = ns; buildVad(ns); setErr(""); })
+          .catch(() => setErr("Your microphone was disconnected. Reconnect it and press the circle."));
+      }
+      if (phaseRef.current === "thinking" && Date.now() - thinkingSince.current > 15000) {
+        inflight.current?.abort();
+        turnId.current++;
+        setErr("The AI took too long to answer. Please say that again.");
+        beginListening();
+      }
+    }, 2000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => () => {
     finished.current = true;

@@ -21,7 +21,10 @@ export async function POST(req: Request) {
     headers: { authorization: `Bearer ${key}` },
     body: form,
   });
-  if (!r.ok) return Response.json({ error: "Transcription failed" }, { status: 502 });
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => "")).slice(0, 200);
+    return Response.json({ error: `Transcription error ${r.status}`, detail }, { status: r.status === 429 ? 429 : 502 });
+  }
   let text = String((await r.json()).text || "").trim();
   // Models hallucinate stock phrases on near-silence; drop them for very short clips.
   if (buf.byteLength < 48000 && /^(thank you\.?|thanks for watching\.?|you\.?|bye\.?)$/i.test(text)) text = "";

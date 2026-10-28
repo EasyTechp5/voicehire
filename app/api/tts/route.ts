@@ -25,6 +25,9 @@ export async function POST(req: Request) {
         : {}),
     }),
   });
-  if (!r.ok || !r.body) return Response.json({ error: "TTS failed" }, { status: 502 });
+  if (!r.ok || !r.body) {
+    const detail = (await r.text().catch(() => "")).slice(0, 200);
+    return Response.json({ error: `Voice service error ${r.status}`, detail }, { status: r.status === 429 ? 429 : 502 });
+  }
   return new Response(r.body, { headers: { "content-type": "audio/mpeg", "cache-control": "no-store" } });
 }
