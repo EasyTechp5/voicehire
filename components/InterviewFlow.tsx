@@ -5,6 +5,7 @@ import { TextOrFile } from "./TextOrFile";
 import { LiveInterview } from "./LiveInterview";
 import { audioStore, interviewsStore, jobsStore, uid, useStore } from "@/lib/store";
 import { sttSupported } from "@/lib/speech";
+import { serverSttAvailable } from "@/lib/vad";
 import type { Interview, Job, PlanQuestion, Report } from "@/lib/types";
 
 type Step = "pick" | "details" | "check" | "preparing" | "live" | "wrapping" | "done";
@@ -219,7 +220,9 @@ function MicCheck({ err, onReady }: { err: string; onReady: () => void }) {
     speechSynthesis.speak(u);
   }
 
-  const supported = sttSupported();
+  const [serverStt, setServerStt] = useState(false);
+  useEffect(() => { serverSttAvailable().then(setServerStt); }, []);
+  const supported = sttSupported() || serverStt;
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-semibold">Quick mic and speaker check</h1>

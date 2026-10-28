@@ -4,6 +4,7 @@ import {
   createListener, createSpeaker, englishVoices, onVoicesReady, serverVoiceAvailable, sttSupported,
   type Listener, type Speaker,
 } from "@/lib/speech";
+import { createVadListener, serverSttAvailable } from "@/lib/vad";
 import type { Job, PlanQuestion, Turn } from "@/lib/types";
 
 type Phase = "idle" | "speaking" | "listening" | "thinking" | "ended";
@@ -31,6 +32,8 @@ export function LiveInterview({
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [heard, setHeard] = useState(false);
+  const [serverStt, setServerStt] = useState<boolean | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
 
   const turns = useRef<Turn[]>([]);
   const t0 = useRef(0);
@@ -48,7 +51,10 @@ export function LiveInterview({
   const failures = useRef(0);
   const turnId = useRef(0);
   const chatEnd = useRef<HTMLDivElement>(null);
-  const canVoice = sttSupported();
+  const canVoice = serverStt === true || sttSupported();
+  const canVoiceRef = useRef(false);
+  canVoiceRef.current = canVoice;
+  useEffect(() => { serverSttAvailable().then(setServerStt); }, []);
 
   const setP = (p: Phase) => { phaseRef.current = p; setPhase(p); };
   useEffect(() => { hpRef.current = headphones; }, [headphones]);
@@ -79,6 +85,7 @@ export function LiveInterview({
       setP("ended");
       clearTimeout(silenceTimer.current);
       listener.current?.stop();
+      (listener.current as { destroy?: () => void } | null)?.destroy?.();
       speaker.current?.cancel();
       const audio = await new Promise<Blob | null>((res) => {
         const r = recorder.current;
@@ -120,6 +127,7 @@ export function LiveInterview({
     const myTurn = ++turnId.current;
     listener.current?.stop();
     setP("speaking");
+    armBargeIn();
     speaker.current!.enqueue("Take your time. Would you like me to repeat the question?");
     thenListen(myTurn);
   }
@@ -130,6 +138,9 @@ export function LiveInterview({
     nudged.current = false;
     beginListening();
   }, [beginListening]);
+
+  // With headphones, keep the mic armed while the AI talks so the candidate can talk over it.
+  const armBargeIn = () => { if (hpRef.current && canVoiceRef.current) listener.current?.start(); };
 
   const submit = useCallback(async (text: string) => {
     if (phaseRef.current === "thinking" || finished.current) return;
@@ -165,7 +176,7 @@ export function LiveInterview({
         const chunk = m ? m[0] : final ? rest : "";
         if (!chunk.trim()) return false;
         spoken += chunk.length;
-        if (!started) { started = true; addTurn("ai", ""); setP("speaking"); }
+        if (!started) { started = true; addTurn("ai", ""); setP("speaking"); armBargeIn(); }
         speaker.current!.enqueue(chunk.trim());
         patchLastAi(v.slice(0, spoken).trim());
         return true;
@@ -227,16 +238,30 @@ export function LiveInterview({
     }
     t0.current = Date.now();
     onStart();
-    if (canVoice) {
+    const useServer = serverStt === true && !!stream.current;
+    if (useServer) {
+      listener.current = createVadListener({
+        stream: stream.current!,
+        pauseMs: 750,
+        onSpeechStart: () => {
+          setHeard(true);
+          setLive("…");
+          clearTimeout(silenceTimer.current);
+          if (phaseRef.current === "speaking" && hpRef.current) interrupt();
+        },
+        onTranscribing: (b) => { setTranscribing(b); if (!b) setLive((l) => (l === "…" ? "" : l)); },
+        onFinal: (t) => { if (phaseRef.current === "listening") submit(t); },
+        onError: setErr,
+      });
+    } else if (sttSupported()) {
       listener.current = createListener({
         pauseMs: PAUSE_MS,
         onInterim: (t) => {
           setLive(t);
           clearTimeout(silenceTimer.current);
-          // Talk-over (barge-in), only with headphones to avoid the AI hearing itself.
           if (phaseRef.current === "speaking" && hpRef.current && t.split(/\s+/).length >= 2) interrupt();
         },
-        onStatus: (s) => s === "heard-speech" && setHeard(true),
+        onStatus: (st) => st === "heard-speech" && setHeard(true),
         onFinal: (t) => { if (phaseRef.current === "listening") submit(t); },
         onError: setErr,
       });
@@ -245,6 +270,7 @@ export function LiveInterview({
     const greeting = `Hello, I'm your AI interviewer for the ${job.title} position. Are you ready to start your interview?`;
     addTurn("ai", greeting);
     setP("speaking");
+    armBargeIn();
     speaker.current.enqueue(greeting);
     thenListen(myTurn);
   }
@@ -252,6 +278,7 @@ export function LiveInterview({
   useEffect(() => () => {
     finished.current = true;
     listener.current?.stop();
+    (listener.current as { destroy?: () => void } | null)?.destroy?.();
     speaker.current?.cancel();
     stream.current?.getTracks().forEach((t) => t.stop());
   }, []);
@@ -282,7 +309,7 @@ export function LiveInterview({
 
   const status: Record<Phase, string> = {
     idle: "", speaking: "Interviewer is speaking", thinking: "Thinking…", ended: "Wrapping up…",
-    listening: canVoice ? (heard ? "Listening…" : "Your turn — go ahead and speak") : "Your turn — type your answer",
+    listening: canVoice ? (transcribing ? "Got it, transcribing…" : heard ? "Listening…" : "Your turn — go ahead and speak") : "Your turn — type your answer",
   };
   const orbHint =
     phase === "speaking" ? "Tap to interrupt" : phase === "listening" && live ? "Tap to send now" : phase === "listening" ? "Tap to talk" : "";
@@ -346,6 +373,7 @@ export function LiveInterview({
             </select>
           </label>
         )}
+        {serverStt && <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-300">HD listening</span>}
         {natural && <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-300">Natural voice on</span>}
         <label className="flex items-center gap-2">Speed
           <select className="rounded-lg border border-white/15 bg-slate-900 px-2 py-1" value={rate} onChange={(e) => setRate(Number(e.target.value))}>
