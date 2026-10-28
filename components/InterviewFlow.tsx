@@ -92,8 +92,22 @@ export function InterviewFlow() {
 
   if (jobs === null) return null;
 
+  const stepIdx = { pick: 0, details: 1, check: 2, preparing: 2, live: 3, wrapping: 3, done: 4 }[step];
+  const Stepper = (
+    <ol className="mb-6 flex items-center gap-2 text-xs">
+      {["Role", "Your details", "Mic check", "Interview", "Done"].map((l, i) => (
+        <li key={l} className="flex flex-1 items-center gap-2">
+          <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full font-semibold ${i <= stepIdx ? "bg-indigo-600 text-white" : "bg-slate-200 text-slate-500"}`}>{i < stepIdx ? "✓" : i + 1}</span>
+          <span className={`hidden sm:inline ${i === stepIdx ? "font-medium text-slate-900" : "text-slate-500"}`}>{l}</span>
+          {i < 4 && <span className={`h-px flex-1 ${i < stepIdx ? "bg-indigo-600" : "bg-slate-200"}`} />}
+        </li>
+      ))}
+    </ol>
+  );
+  const wrap = (el: React.ReactNode) => <div>{Stepper}{el}</div>;
+
   if (step === "pick")
-    return (
+    return wrap(
       <div>
         <h1 className="text-2xl font-semibold">Choose your interview</h1>
         <div className="mt-4 space-y-3">
@@ -111,7 +125,7 @@ export function InterviewFlow() {
   if (!job) return null;
 
   if (step === "details")
-    return (
+    return wrap(
       <div className="space-y-5">
         <div>
           <h1 className="text-2xl font-semibold">{job.title}</h1>
@@ -139,18 +153,19 @@ export function InterviewFlow() {
       </div>
     );
 
-  if (step === "check") return <MicCheck err={err} onReady={prepare} />;
+  if (step === "check") return wrap(<MicCheck err={err} onReady={prepare} />);
 
   if (step === "preparing")
-    return <div className="card text-center"><p className="font-medium">Preparing your personalised questions…</p><p className="mt-1 text-sm text-neutral-500">This takes about 15 seconds.</p></div>;
+    return wrap(<div className="card py-12 text-center"><div className="orb mx-auto mb-5 h-16 w-16" data-state="thinking" /><p className="font-medium">Preparing your personalised questions…</p><p className="mt-1 text-sm text-slate-500">This takes about 15 seconds.</p></div>);
 
-  if (step === "live") return <LiveInterview job={job} plan={plan} onFinished={onFinished} onStart={() => { ivRef.current = { ...ivRef.current!, status: "in_progress", startedAt: Date.now() }; interviewsStore.save(ivRef.current); }} />;
+  if (step === "live") return wrap(<LiveInterview job={job} plan={plan} onFinished={onFinished} onStart={() => { ivRef.current = { ...ivRef.current!, status: "in_progress", startedAt: Date.now() }; interviewsStore.save(ivRef.current); }} />);
 
   if (step === "wrapping")
-    return <div className="card text-center"><p className="font-medium">Wrapping up…</p><p className="mt-1 text-sm text-neutral-500">Please keep this tab open for a moment while we save your interview.</p></div>;
+    return wrap(<div className="card py-12 text-center"><div className="orb mx-auto mb-5 h-16 w-16" data-state="thinking" /><p className="font-medium">Wrapping up…</p><p className="mt-1 text-sm text-slate-500">Please keep this tab open for a moment while we save your interview.</p></div>);
 
-  return (
-    <div className="card space-y-3 text-center">
+  return wrap(
+    <div className="card space-y-3 py-10 text-center">
+      <div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-emerald-100 text-2xl text-emerald-600">✓</div>
       <h1 className="text-2xl font-semibold">Thank you{name ? `, ${name.split(" ")[0]}` : ""}!</h1>
       <p className="text-neutral-600">Your interview is complete. You will hear from us.</p>
       {feedback && (

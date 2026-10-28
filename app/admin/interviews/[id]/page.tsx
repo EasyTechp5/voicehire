@@ -72,9 +72,15 @@ function InterviewDetail() {
         {r && (
           <section className="grid gap-4 lg:grid-cols-3">
             <div className="card">
-              <div className="text-sm text-neutral-500">Overall score</div>
-              <div className="mt-1 text-5xl font-semibold">{r.overall}<span className="text-lg text-neutral-400">/100</span></div>
-              <div className="mt-1 font-medium">{resultLabel(r.overall)}</div>
+              <div className="text-center text-sm text-neutral-500">Overall score</div>
+              <div className="relative mx-auto mt-2 h-36 w-36">
+                <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
+                  <circle cx="60" cy="60" r="52" fill="none" stroke="#e2e8f0" strokeWidth="10" />
+                  <circle cx="60" cy="60" r="52" fill="none" strokeWidth="10" strokeLinecap="round" stroke={r.overall >= 80 ? "#10b981" : r.overall >= 60 ? "#6366f1" : r.overall >= 40 ? "#f59e0b" : "#ef4444"} strokeDasharray={`${(r.overall / 100) * 326.7} 326.7`} />
+                </svg>
+                <div className="absolute inset-0 grid place-items-center text-4xl font-semibold">{r.overall}</div>
+              </div>
+              <div className="mt-2 text-center font-medium">{resultLabel(r.overall)}</div>
               {r.needsReview && <div className="mt-2 inline-block rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-800">Needs human review</div>}
               <p className="mt-3 text-xs text-neutral-500">Model: {r.model}. Assists a human decision; never the sole basis for rejection.</p>
             </div>

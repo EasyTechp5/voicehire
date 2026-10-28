@@ -41,3 +41,33 @@ export async function ask(opts: {
   });
   return res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
 }
+
+/** Streams plain text deltas as a Response body. */
+export function streamText(opts: { model: string; system: string; user: string; maxTokens: number }) {
+  const c = client();
+  if (!c) return noKey();
+  const stream = c.messages.stream({
+    model: opts.model,
+    max_tokens: opts.maxTokens,
+    system: opts.system,
+    messages: [{ role: "user", content: opts.user }],
+  });
+  const enc = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      async start(ctrl) {
+        try {
+          for await (const ev of stream) {
+            if (ev.type === "content_block_delta" && ev.delta.type === "text_delta")
+              ctrl.enqueue(enc.encode(ev.delta.text));
+          }
+          ctrl.close();
+        } catch (e) {
+          ctrl.error(e);
+        }
+      },
+      cancel() { stream.abort(); },
+    }),
+    { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } },
+  );
+}
