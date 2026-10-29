@@ -56,7 +56,8 @@ export function streamText(opts: { model: string; system: string; user: string; 
           try {
             const stream = c.messages.stream({
               model: opts.model,
-              max_tokens: opts.maxTokens,
+              max_tokens: Math.max(opts.maxTokens, 1024), // headroom: hidden reasoning also counts toward this limit
+              thinking: { type: "disabled" }, // live conversation needs the first word fast
               system: opts.system,
               messages: [{ role: "user", content: opts.user }],
             });
