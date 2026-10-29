@@ -42,31 +42,42 @@ export async function ask(opts: {
   return res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
 }
 
-/** Streams plain text deltas as a Response body. */
+/** Streams plain text deltas as a Response body. Errors are logged and signalled in-band as <<ERR>>. */
 export function streamText(opts: { model: string; system: string; user: string; maxTokens: number }) {
   const c = client();
   if (!c) return noKey();
-  const stream = c.messages.stream({
-    model: opts.model,
-    max_tokens: opts.maxTokens,
-    system: opts.system,
-    messages: [{ role: "user", content: opts.user }],
-  });
   const enc = new TextEncoder();
+  let aborter: (() => void) | null = null;
   return new Response(
     new ReadableStream({
       async start(ctrl) {
-        try {
-          for await (const ev of stream) {
-            if (ev.type === "content_block_delta" && ev.delta.type === "text_delta")
-              ctrl.enqueue(enc.encode(ev.delta.text));
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          let sent = false;
+          try {
+            const stream = c.messages.stream({
+              model: opts.model,
+              max_tokens: opts.maxTokens,
+              system: opts.system,
+              messages: [{ role: "user", content: opts.user }],
+            });
+            aborter = () => stream.abort();
+            for await (const ev of stream) {
+              if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
+                sent = true;
+                ctrl.enqueue(enc.encode(ev.delta.text));
+              }
+            }
+            if (sent) return ctrl.close();
+            console.error(`[turn] empty completion (attempt ${attempt}), stop_reason=${(await stream.finalMessage()).stop_reason}`);
+          } catch (e) {
+            console.error(`[turn] stream error (attempt ${attempt}):`, (e as Error).message);
+            if (sent) break; // already partially spoken; don't restart
           }
-          ctrl.close();
-        } catch (e) {
-          ctrl.error(e);
         }
+        ctrl.enqueue(enc.encode("<<ERR>>"));
+        ctrl.close();
       },
-      cancel() { stream.abort(); },
+      cancel() { aborter?.(); },
     }),
     { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } },
   );

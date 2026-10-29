@@ -216,6 +216,7 @@ export function LiveInterview({
         while (queueSentences(false));
       }
       while (queueSentences(true));
+      if (!started || /<<ERR>>/.test(full)) throw new Error("The AI did not answer");
       // Update progress from the control markers (fallback: no marker after the first question counts as a follow-up).
       const q = full.match(/<<Q:(\d+)>>/);
       if (q) qState.current = { asked: Number(q[1]), followups: 0, closing: false };
