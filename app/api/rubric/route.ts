@@ -1,9 +1,11 @@
 import { ask, client, extractJson, noKey, SCORING_MODEL } from "@/lib/claude";
 import type { Competency } from "@/lib/types";
+import { isAdmin, unauthorized } from "@/lib/auth";
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  if (!(await isAdmin())) return unauthorized();
   if (!client()) return noKey();
   const { title, seniority, jdText } = await req.json();
   if (!jdText || String(jdText).length < 30)

@@ -3,8 +3,9 @@ import { Suspense } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Header } from "@/components/Header";
-import { audioStore, interviewsStore, jobsStore } from "@/lib/store";
-import { resultLabel, type Interview } from "@/lib/types";
+import { AdminGate } from "@/components/AdminGate";
+import { admin } from "@/lib/api";
+import { resultLabel, type Interview, type Job } from "@/lib/types";
 
 const mmss = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 
@@ -12,44 +13,33 @@ function InterviewDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [iv, setIv] = useState<Interview | null | undefined>(undefined);
+  const [job, setJob] = useState<Job | null>(null);
   const [audioUrl, setAudioUrl] = useState("");
   const [note, setNote] = useState("");
+  const [saved, setSaved] = useState(false);
   const audio = useRef<HTMLAudioElement>(null);
 
-  useEffect(() => {
-    const i = interviewsStore.get(id) ?? null;
-    setIv(i);
-    setNote(i?.adminNote ?? "");
-    let url = "";
-    audioStore.get(id).then((b) => {
-      if (b) setAudioUrl((url = URL.createObjectURL(b)));
-    });
-    return () => { if (url) URL.revokeObjectURL(url); };
-  }, [id]);
+  const load = async () => {
+    try {
+      const d = await admin.interview(id);
+      setIv(d.interview);
+      setJob(d.job);
+      setNote(d.interview.adminNote ?? "");
+      setAudioUrl(d.audioUrl ?? "");
+    } catch { setIv(null); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
 
   if (iv === undefined) return null;
   if (iv === null)
-    return (<><Header area="admin" /><main className="p-8">Interview not found on this device.</main></>);
+    return (<><Header area="admin" /><main className="p-8">Interview not found.</main></>);
 
-  const job = jobsStore.get(iv.jobId);
   const r = iv.report;
 
   async function rescore() {
-    if (!job || !iv) return;
-    const upd = { ...iv, status: "scoring" as const, error: undefined };
-    interviewsStore.save(upd);
-    setIv(upd);
-    const res = await fetch("/api/score", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ job, plan: iv.plan, turns: iv.turns }),
-    });
-    const j = await res.json();
-    const next: Interview = res.ok
-      ? { ...upd, status: "completed", answerScores: j.answers, report: j.report }
-      : { ...upd, status: "failed", error: j.error };
-    interviewsStore.save(next);
-    setIv(next);
+    setIv({ ...iv!, status: "scoring", error: undefined });
+    try { await admin.rescore(id); } catch { /* error is stored on the interview */ }
+    await load();
   }
 
   return (
@@ -63,7 +53,7 @@ function InterviewDetail() {
           </div>
           <div className="flex gap-2">
             <button className="btn-ghost" onClick={rescore} disabled={iv.turns.length < 2}>Re-score</button>
-            <button className="btn-ghost" onClick={async () => { if (confirm("Delete this interview and its recording?")) { await interviewsStore.remove(iv.id); router.push("/admin"); } }}>Delete</button>
+            <button className="btn-ghost" onClick={async () => { if (confirm("Delete this interview and its recording?")) { await admin.deleteInterview(iv.id); router.push("/admin"); } }}>Delete</button>
           </div>
         </div>
         {iv.error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Scoring error: {iv.error}</p>}
@@ -132,7 +122,7 @@ function InterviewDetail() {
 
         <section className="card">
           <h2 className="mb-3 font-semibold">Recording &amp; transcript</h2>
-          {audioUrl ? <audio ref={audio} src={audioUrl} controls className="mb-4 w-full" /> : <p className="mb-4 text-sm text-neutral-500">No recording on this device.</p>}
+          {audioUrl ? <audio ref={audio} src={audioUrl} controls className="mb-4 w-full" /> : <p className="mb-4 text-sm text-neutral-500">No recording for this interview.</p>}
           <div className="space-y-2 text-sm">
             {iv.turns.map((t, i) => (
               <button key={i} className="flex w-full gap-3 rounded-lg p-2 text-left hover:bg-neutral-50" onClick={() => { if (audio.current && t.speaker === "candidate") { audio.current.currentTime = t.at / 1000; audio.current.play(); } }}>
@@ -152,7 +142,7 @@ function InterviewDetail() {
         <section className="card">
           <h2 className="mb-2 font-semibold">Admin note</h2>
           <textarea className="input" rows={3} value={note} onChange={(e) => setNote(e.target.value)} />
-          <button className="btn-primary mt-2" onClick={() => { const n = { ...iv, adminNote: note }; interviewsStore.save(n); setIv(n); }}>Save note</button>
+          <button className="btn-primary mt-2" onClick={async () => { await admin.saveNote(iv.id, note); setSaved(true); setTimeout(() => setSaved(false), 1500); }}>{saved ? "Saved ✓" : "Save note"}</button>
         </section>
       </main>
     </>
@@ -162,7 +152,9 @@ function InterviewDetail() {
 export default function Page() {
   return (
     <Suspense>
-      <InterviewDetail />
+      <AdminGate>
+        <InterviewDetail />
+      </AdminGate>
     </Suspense>
   );
 }

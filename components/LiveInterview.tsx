@@ -5,17 +5,19 @@ import {
   type Listener, type Speaker,
 } from "@/lib/speech";
 import { createVadListener, serverSttAvailable, type VadListener } from "@/lib/vad";
-import type { Job, PlanQuestion, Turn } from "@/lib/types";
+import type { JobLite } from "@/lib/api";
+import type { Turn } from "@/lib/types";
 
 type Phase = "idle" | "speaking" | "listening" | "thinking" | "ended";
 
 const PAUSE_MS = 700; // end-of-speech pause (PRD: ~0.7s)
 
 export function LiveInterview({
-  job, plan, onStart, onFinished,
+  job, interviewId, onTurns, onStart, onFinished,
 }: {
-  job: Job;
-  plan: PlanQuestion[];
+  job: JobLite;
+  interviewId: string;
+  onTurns?: (turns: Turn[]) => void;
   onStart: () => void;
   onFinished: (r: { turns: Turn[]; durationSec: number; audio: Blob | null; abandoned: boolean }) => void;
 }) {
@@ -74,7 +76,7 @@ export function LiveInterview({
     return () => clearInterval(id);
   }, []);
 
-  const sync = () => setTurnsView([...turns.current]);
+  const sync = () => { setTurnsView([...turns.current]); onTurns?.([...turns.current]); };
   const addTurn = (speaker: Turn["speaker"], text: string) => {
     turns.current = [...turns.current, { speaker, text, at: Date.now() - t0.current }];
     sync();
@@ -181,7 +183,7 @@ export function LiveInterview({
         signal: ac.signal,
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ job, plan, turns: turns.current, elapsedSec }),
+        body: JSON.stringify({ interviewId, turns: turns.current, elapsedSec }),
       });
       if (!r.ok || !r.body) throw new Error((await r.json().catch(() => ({}))).error || "AI error");
       failures.current = 0;
@@ -224,7 +226,7 @@ export function LiveInterview({
       thenListen(myTurn);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job, plan, finish]);
+  }, [job, interviewId, finish]);
 
   // (Re)creates the always-on mic listener. Also used by the watchdog if the audio pipeline stalls.
   function buildVad(s: MediaStream) {

@@ -1,5 +1,8 @@
 import { client, noKey, streamText, CONVERSATION_MODEL } from "@/lib/claude";
-import type { Job, PlanQuestion, Turn } from "@/lib/types";
+import { sb } from "@/lib/supabase";
+import type { PlanQuestion, Turn } from "@/lib/types";
+
+const cache = new Map<string, { at: number; plan: PlanQuestion[]; title: string; durationMin: number }>();
 
 export const maxDuration = 30;
 
@@ -19,13 +22,22 @@ const RULES = `You are a warm, professional AI interviewer running a spoken scre
 
 export async function POST(req: Request) {
   if (!client()) return noKey();
-  const { job, plan, turns, elapsedSec } = (await req.json()) as {
-    job: Job;
-    plan: PlanQuestion[];
+  const { interviewId, turns, elapsedSec } = (await req.json()) as {
+    interviewId: string;
     turns: Turn[];
     elapsedSec: number;
   };
-  const budget = job.settings.durationMin * 60;
+  let ctx = cache.get(interviewId);
+  if (!ctx || Date.now() - ctx.at > 600000) {
+    const { data } = await sb().from("interviews").select("plan, jobs(title, settings)").eq("id", interviewId).maybeSingle();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const j = (data as any)?.jobs;
+    if (!data || !j) return Response.json({ error: "Interview not found" }, { status: 404 });
+    ctx = { at: Date.now(), plan: data.plan as PlanQuestion[], title: j.title, durationMin: j.settings.durationMin };
+    cache.set(interviewId, ctx);
+  }
+  const { plan, title, durationMin } = ctx;
+  const budget = durationMin * 60;
   const transcript = turns
     .map((t) => `${t.speaker === "ai" ? "INTERVIEWER" : "CANDIDATE"}: ${t.text}`)
     .join("\n");
@@ -33,7 +45,7 @@ export async function POST(req: Request) {
     model: CONVERSATION_MODEL,
     maxTokens: 170,
     system: RULES,
-    user: `Role: ${job.title}
+    user: `Role: ${title}
 Time used: ${Math.round(elapsedSec)}s of ${budget}s.
 Interview plan (in order):
 ${plan.map((q, i) => `${i + 1}. [${q.competency}] ${q.text} | probes: ${q.probes.join(" / ")}`).join("\n")}

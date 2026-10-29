@@ -1,9 +1,11 @@
 "use client";
 import Link from "next/link";
 import { Header } from "@/components/Header";
-import { interviewsStore, jobsStore, useStore } from "@/lib/store";
+import { AdminGate } from "@/components/AdminGate";
+import { admin } from "@/lib/api";
+import type { Interview, Job } from "@/lib/types";
 import { resultLabel } from "@/lib/types";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const fmtDur = (s?: number) => (s == null ? "—" : `${Math.floor(s / 60)}m ${s % 60}s`);
 const statusStyle: Record<string, string> = {
@@ -16,20 +18,27 @@ const statusStyle: Record<string, string> = {
 };
 
 export default function Admin() {
-  const jobs = useStore(jobsStore.all);
-  const interviews = useStore(interviewsStore.all);
+  return <AdminGate><Dashboard /></AdminGate>;
+}
+
+function Dashboard() {
+  const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [interviews, setInterviews] = useState<Interview[] | null>(null);
   const [q, setQ] = useState("");
   const [jobFilter, setJobFilter] = useState("");
+  const [err, setErr] = useState("");
 
-  const rows = useMemo(
-    () =>
-      (interviews ?? []).filter(
-        (i) =>
-          (!jobFilter || i.jobId === jobFilter) &&
-          (!q || (i.candidateName + i.candidateEmail + i.turns.map((t) => t.text).join(" ")).toLowerCase().includes(q.toLowerCase())),
-      ),
-    [interviews, q, jobFilter],
-  );
+  const load = useCallback(async (query: string) => {
+    try {
+      const [j, i] = await Promise.all([admin.jobs(), admin.interviews(query)]);
+      setJobs(j);
+      setInterviews(i);
+      setErr("");
+    } catch (e) { setErr((e as Error).message); }
+  }, []);
+  useEffect(() => { const t = setTimeout(() => load(q), q ? 350 : 0); return () => clearTimeout(t); }, [q, load]);
+
+  const rows = (interviews ?? []).filter((i) => !jobFilter || i.jobId === jobFilter);
 
   const done = (interviews ?? []).filter((i) => i.report);
   const avgScore = done.length ? Math.round(done.reduce((s, i) => s + i.report!.overall, 0) / done.length) : null;
@@ -42,7 +51,7 @@ export default function Admin() {
       <main className="mx-auto w-full max-w-6xl flex-1 space-y-8 px-5 py-8">
         <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
           AI scores support a human decision; they must never be the sole basis for rejecting a candidate.
-          Demo storage: data lives in this browser only.
+          Transcripts, scores and recordings are stored securely in Supabase.
         </p>
 
         <section className="grid gap-4 sm:grid-cols-4">
@@ -81,7 +90,7 @@ export default function Admin() {
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <Link href={`/admin/jobs/${j.id}`} className="btn-ghost">Edit</Link>
-                  <button className="btn-ghost" onClick={() => confirm("Delete this job?") && jobsStore.remove(j.id)}>✕</button>
+                  <button className="btn-ghost" onClick={async () => { if (confirm("Delete this job?")) { await admin.deleteJob(j.id); load(q); } }}>✕</button>
                 </div>
               </div>
             ))}

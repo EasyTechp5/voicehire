@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { TextOrFile } from "./TextOrFile";
-import { jobsStore, uid } from "@/lib/store";
+import { admin, uid } from "@/lib/api";
 import type { Competency, Job } from "@/lib/types";
 
 const blank = (): Job => ({
@@ -46,7 +46,7 @@ export function JobEditor({ initial }: { initial?: Job }) {
     }
   }
 
-  function save(approve: boolean) {
+  async function save(approve: boolean) {
     setErr("");
     if (!job.title.trim()) return setErr("Add a job title.");
     if (job.jdText.trim().length < 30) return setErr("Add the job description.");
@@ -54,8 +54,12 @@ export function JobEditor({ initial }: { initial?: Job }) {
       if (job.competencies.length < 1) return setErr("Draft or add at least one competency first.");
       if (total !== 100) return setErr(`Weights must total 100 (currently ${total}).`);
     }
-    jobsStore.save({ ...job, id: job.id || uid(), createdAt: job.createdAt || Date.now(), rubricApproved: approve });
-    router.push("/admin");
+    try {
+      await admin.saveJob({ ...job, id: job.id || uid(), createdAt: job.createdAt || Date.now(), rubricApproved: approve });
+      router.push("/admin");
+    } catch (e) {
+      setErr((e as Error).message);
+    }
   }
 
   return (

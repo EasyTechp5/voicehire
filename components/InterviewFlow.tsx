@@ -1,57 +1,47 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
 import { TextOrFile } from "./TextOrFile";
 import { LiveInterview } from "./LiveInterview";
-import { audioStore, interviewsStore, jobsStore, uid, useStore } from "@/lib/store";
+import { candidate, type JobLite } from "@/lib/api";
 import { sttSupported } from "@/lib/speech";
 import { serverSttAvailable } from "@/lib/vad";
-import type { Interview, Job, PlanQuestion, Report } from "@/lib/types";
+import type { Report, Turn } from "@/lib/types";
 
 type Step = "pick" | "details" | "check" | "preparing" | "live" | "wrapping" | "done";
 
 export function InterviewFlow() {
   const params = useSearchParams();
-  const jobs = useStore(jobsStore.all);
-  const published = jobs?.filter((j) => j.rubricApproved);
-  const [job, setJob] = useState<Job | null>(null);
+  const [jobs, setJobs] = useState<JobLite[] | null>(null);
+  const [job, setJob] = useState<JobLite | null>(null);
   const [step, setStep] = useState<Step>("pick");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [resume, setResume] = useState("");
   const [consent, setConsent] = useState(false);
   const [err, setErr] = useState("");
-  const [plan, setPlan] = useState<PlanQuestion[]>([]);
-  const [feedback, setFeedback] = useState<Report | null>(null);
-  const ivRef = useRef<Interview | null>(null);
+  const [feedback, setFeedback] = useState<Pick<Report, "strengths" | "concerns"> | null>(null);
+  const interviewId = useRef("");
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => { candidate.jobs().then(setJobs).catch(() => setJobs([])); }, []);
 
   useEffect(() => {
     const id = params.get("job");
-    if (id && published && !job) {
-      const j = published.find((x) => x.id === id);
+    if (id && jobs && !job) {
+      const j = jobs.find((x) => x.id === id);
       if (j) { setJob(j); setStep("details"); }
     }
-  }, [params, published, job]);
+  }, [params, jobs, job]);
 
   async function prepare() {
     if (!job) return;
     setErr("");
     setStep("preparing");
     try {
-      const r = await fetch("/api/plan", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ job, resumeText: resume }),
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Could not prepare the interview.");
-      setPlan(j.questions);
-      ivRef.current = {
-        id: uid(), jobId: job.id, candidateName: name.trim(), candidateEmail: email.trim(),
-        resumeText: resume, status: "scheduled", plan: j.questions, turns: [], answerScores: [],
-        consentAt: Date.now(), hasAudio: false,
-      };
-      interviewsStore.save(ivRef.current);
+      const { id } = await candidate.create({ jobId: job.id, name: name.trim(), email: email.trim(), resumeText: resume, consent });
+      interviewId.current = id;
       setStep("live");
     } catch (e) {
       setErr((e as Error).message);
@@ -59,36 +49,33 @@ export function InterviewFlow() {
     }
   }
 
+  // Autosave every turn (debounced) so a dropped call loses nothing.
+  const onTurns = useCallback((turns: Turn[]) => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { candidate.saveTurns(interviewId.current, turns).catch(() => {}); }, 500);
+  }, []);
+
   const onFinished = useCallback(
-    async (res: { turns: Interview["turns"]; durationSec: number; audio: Blob | null; abandoned: boolean }) => {
-      const base = ivRef.current!;
-      if (res.audio) await audioStore.save(base.id, res.audio);
-      const common: Interview = {
-        ...base, turns: res.turns, durationSec: res.durationSec, endedAt: Date.now(), hasAudio: !!res.audio,
-      };
-      const answered = res.turns.filter((t) => t.speaker === "candidate").length;
-      if (res.abandoned && answered < 2) {
-        interviewsStore.save({ ...common, status: "abandoned" });
-        return setStep("done");
-      }
-      interviewsStore.save({ ...common, status: "scoring" });
+    async (res: { turns: Turn[]; durationSec: number; audio: Blob | null; abandoned: boolean }) => {
+      clearTimeout(saveTimer.current);
+      const id = interviewId.current;
       setStep("wrapping");
-      try {
-        const r = await fetch("/api/score", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ job, plan: base.plan, turns: res.turns }),
-        });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error || "Scoring failed");
-        interviewsStore.save({ ...common, status: "completed", answerScores: j.answers, report: j.report });
-        if (job?.settings.practiceMode) setFeedback(j.report);
-      } catch (e) {
-        interviewsStore.save({ ...common, status: "failed", error: (e as Error).message });
+      let hasAudio = false;
+      if (res.audio) {
+        try {
+          const { path, token } = await candidate.audioTarget(id);
+          const supa = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!);
+          const { error } = await supa.storage.from("recordings").uploadToSignedUrl(path, token, res.audio, { contentType: res.audio.type || "audio/webm" });
+          hasAudio = !error;
+        } catch { /* recording is best-effort; the transcript is already saved */ }
       }
+      try {
+        const out = await candidate.finish(id, { turns: res.turns, durationSec: res.durationSec, abandoned: res.abandoned, hasAudio });
+        if (out.feedback) setFeedback(out.feedback);
+      } catch { /* admin can re-score from the dashboard */ }
       setStep("done");
     },
-    [job],
+    [],
   );
 
   if (jobs === null) return null;
@@ -112,8 +99,8 @@ export function InterviewFlow() {
       <div>
         <h1 className="text-2xl font-semibold">Choose your interview</h1>
         <div className="mt-4 space-y-3">
-          {published?.length === 0 && <p className="card text-sm text-neutral-600">No interviews are open yet. An admin needs to publish a job first.</p>}
-          {published?.map((j) => (
+          {jobs.length === 0 && <p className="card text-sm text-neutral-600">No interviews are open yet. An admin needs to publish a job first.</p>}
+          {jobs.map((j) => (
             <button key={j.id} className="card block w-full text-left transition hover:border-accent" onClick={() => { setJob(j); setStep("details"); }}>
               <div className="font-medium">{j.title}</div>
               <div className="text-sm text-neutral-500">{j.department} · about {j.settings.durationMin} minutes</div>
@@ -159,7 +146,7 @@ export function InterviewFlow() {
   if (step === "preparing")
     return wrap(<div className="card py-12 text-center"><div className="orb mx-auto mb-5 h-16 w-16" data-state="thinking" /><p className="font-medium">Preparing your personalised questions…</p><p className="mt-1 text-sm text-slate-500">This takes about 15 seconds.</p></div>);
 
-  if (step === "live") return wrap(<LiveInterview job={job} plan={plan} onFinished={onFinished} onStart={() => { ivRef.current = { ...ivRef.current!, status: "in_progress", startedAt: Date.now() }; interviewsStore.save(ivRef.current); }} />);
+  if (step === "live") return wrap(<LiveInterview job={job} interviewId={interviewId.current} onTurns={onTurns} onFinished={onFinished} onStart={() => { candidate.saveTurns(interviewId.current, [], true).catch(() => {}); }} />);
 
   if (step === "wrapping")
     return wrap(<div className="card py-12 text-center"><div className="orb mx-auto mb-5 h-16 w-16" data-state="thinking" /><p className="font-medium">Wrapping up…</p><p className="mt-1 text-sm text-slate-500">Please keep this tab open for a moment while we save your interview.</p></div>);
