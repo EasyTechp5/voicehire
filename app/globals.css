@@ -14,6 +14,9 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html { scroll-behavior: smooth; }
+::selection { background: #c7d2fe; color: #1e1b4b; }
+:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; border-radius: 6px; }
 body {
   background: var(--background);
   color: var(--foreground);
@@ -61,3 +64,14 @@ body {
     radial-gradient(700px 400px at 95% 10%, #f5d0fe88, transparent 60%), #f8f9fd;
 }
 .gradient-text { background: linear-gradient(90deg, #4f46e5, #c026d3); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+/* ---------- UI kit ---------- */
+.badge { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium; }
+.chip { @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600; }
+.skeleton { @apply animate-pulse rounded-xl bg-slate-200/70; }
+.section-title { @apply text-lg font-semibold tracking-tight; }
+.card-hover { @apply transition duration-200 hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-[0_12px_32px_-14px_rgba(79,70,229,0.35)]; }
+.table-head { @apply border-b border-slate-200 bg-slate-50/70 text-xs font-medium uppercase tracking-wide text-slate-500; }
+.dot-grid { background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 22px 22px; mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%); -webkit-mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%); }
+.input { @apply placeholder:text-slate-400; }
+.btn-ghost, .btn-primary { @apply active:scale-[0.98]; }

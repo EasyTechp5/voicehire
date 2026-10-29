@@ -17,6 +17,18 @@ const blank = (): Job => ({
   createdAt: 0,
 });
 
+function SectionHead({ n, title, hint, bare }: { n: number; title: string; hint: string; bare?: boolean }) {
+  return (
+    <div className={`flex items-start gap-3 ${bare ? "" : "col-span-full"}`}>
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-indigo-600 text-xs font-semibold text-white">{n}</span>
+      <div>
+        <h2 className="font-semibold leading-7">{title}</h2>
+        <p className="text-sm text-slate-500">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
 export function JobEditor({ initial }: { initial?: Job }) {
   const router = useRouter();
   const [job, setJob] = useState<Job>(initial ?? blank());
@@ -65,7 +77,8 @@ export function JobEditor({ initial }: { initial?: Job }) {
   return (
     <div className="space-y-6">
       <section className="card grid gap-4 sm:grid-cols-3">
-        <div className="sm:col-span-3 sm:col-span-1">
+        <SectionHead n={1} title="Role & description" hint="What the job is. The interviewer uses this to write questions." />
+        <div className="sm:col-span-1">
           <label className="label">Job title</label>
           <input className="input" value={job.title} onChange={(e) => set({ title: e.target.value })} placeholder="Senior Backend Engineer" />
         </div>
@@ -88,11 +101,8 @@ export function JobEditor({ initial }: { initial?: Job }) {
       </section>
 
       <section className="card">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold">Scoring rubric</h2>
-            <p className="text-sm text-neutral-500">5–8 weighted competencies, scored 1–5. Edit, then approve.</p>
-          </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionHead n={2} title="Scoring rubric" hint="5–8 weighted competencies, scored 1–5. Edit, then approve." bare />
           <button className="btn-ghost" onClick={draftRubric} disabled={busy || job.jdText.length < 30}>
             {busy ? "Drafting…" : job.competencies.length ? "Redraft with AI" : "Draft with AI"}
           </button>
@@ -117,6 +127,7 @@ export function JobEditor({ initial }: { initial?: Job }) {
       </section>
 
       <section className="card grid gap-4 sm:grid-cols-4">
+        <SectionHead n={3} title="Interview settings" hint="How long and how deep the interview goes." />
         <div>
           <label className="label">Length</label>
           <select className="input" value={job.settings.durationMin} onChange={(e) => setJob({ ...job, settings: { ...job.settings, durationMin: Number(e.target.value) as 10 | 20 | 30 } })}>
@@ -139,10 +150,12 @@ export function JobEditor({ initial }: { initial?: Job }) {
         </label>
       </section>
 
-      {err && <p className="text-sm text-red-600">{err}</p>}
-      <div className="flex gap-3">
-        <button className="btn-primary" onClick={() => save(true)}>Approve rubric &amp; publish</button>
-        <button className="btn-ghost" onClick={() => save(false)}>Save draft</button>
+      <div className="sticky bottom-0 -mx-5 border-t border-slate-200 bg-white/90 px-5 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3">
+          <button className="btn-primary" onClick={() => save(true)}>Approve rubric &amp; publish</button>
+          <button className="btn-ghost" onClick={() => save(false)}>Save draft</button>
+          {err && <p className="text-sm text-red-600">{err}</p>}
+        </div>
       </div>
     </div>
   );

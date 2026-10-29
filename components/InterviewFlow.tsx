@@ -7,6 +7,7 @@ import { LiveInterview } from "./LiveInterview";
 import { candidate, type JobLite } from "@/lib/api";
 import { sttSupported } from "@/lib/speech";
 import { serverSttAvailable } from "@/lib/vad";
+import { IconArrow, IconBriefcase, IconClock } from "./icons";
 import type { Report, Turn } from "@/lib/types";
 
 type Step = "pick" | "details" | "check" | "preparing" | "live" | "wrapping" | "done";
@@ -78,7 +79,7 @@ export function InterviewFlow() {
     [],
   );
 
-  if (jobs === null) return null;
+  if (jobs === null) return <div className="space-y-4"><div className="skeleton h-8 w-64" /><div className="grid gap-4 sm:grid-cols-2"><div className="skeleton h-40" /><div className="skeleton h-40" /></div></div>;
 
   const stepIdx = { pick: 0, details: 1, check: 2, preparing: 2, live: 3, wrapping: 3, done: 4 }[step];
   const Stepper = (
@@ -97,13 +98,25 @@ export function InterviewFlow() {
   if (step === "pick")
     return wrap(
       <div>
-        <h1 className="text-2xl font-semibold">Choose your interview</h1>
-        <div className="mt-4 space-y-3">
-          {jobs.length === 0 && <p className="card text-sm text-neutral-600">No interviews are open yet. An admin needs to publish a job first.</p>}
+        <h1 className="text-2xl font-semibold tracking-tight">Choose your interview</h1>
+        <p className="mt-1 text-sm text-slate-500">Pick the role you&apos;re interviewing for. You&apos;ll speak with an AI interviewer; it takes about 10 to 30 minutes.</p>
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          {jobs.length === 0 && (
+            <div className="card col-span-full flex flex-col items-center py-12 text-center">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500"><IconBriefcase /></div>
+              <p className="mt-3 font-medium">No interviews are open right now</p>
+              <p className="text-sm text-slate-500">Check back soon, or use the link you were sent.</p>
+            </div>
+          )}
           {jobs.map((j) => (
-            <button key={j.id} className="card block w-full text-left transition hover:border-accent" onClick={() => { setJob(j); setStep("details"); }}>
-              <div className="font-medium">{j.title}</div>
-              <div className="text-sm text-neutral-500">{j.department} · about {j.settings.durationMin} minutes</div>
+            <button key={j.id} className="card card-hover group block w-full text-left" onClick={() => { setJob(j); setStep("details"); }}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-600"><IconBriefcase /></div>
+                <IconArrow className="mt-1 h-5 w-5 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-indigo-500" />
+              </div>
+              <div className="mt-4 font-semibold">{j.title}</div>
+              <div className="mt-1 text-sm text-slate-500">{j.department || "General"}</div>
+              <div className="mt-3 flex gap-2"><span className="chip"><IconClock className="h-3.5 w-3.5" /> ~{j.settings.durationMin} min</span><span className="chip">{j.seniority}</span></div>
             </button>
           ))}
         </div>
