@@ -52,6 +52,7 @@ export function LiveInterview({
   const alwaysOn = useRef(false); // server STT keeps the mic live the whole call
   const inflight = useRef<AbortController | null>(null);
   const thinkingSince = useRef(0);
+  const qState = useRef({ asked: 0, followups: 0, closing: false }); // interview progress, sent with every turn
   const finished = useRef(false);
   const failures = useRef(0);
   const turnId = useRef(0);
@@ -183,7 +184,7 @@ export function LiveInterview({
         signal: ac.signal,
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ interviewId, turns: turns.current, elapsedSec }),
+        body: JSON.stringify({ interviewId, turns: turns.current, elapsedSec, state: qState.current }),
       });
       if (!r.ok || !r.body) throw new Error((await r.json().catch(() => ({}))).error || "AI error");
       failures.current = 0;
@@ -215,6 +216,11 @@ export function LiveInterview({
         while (queueSentences(false));
       }
       while (queueSentences(true));
+      // Update progress from the control markers (fallback: no marker after the first question counts as a follow-up).
+      const q = full.match(/<<Q:(\d+)>>/);
+      if (q) qState.current = { asked: Number(q[1]), followups: 0, closing: false };
+      else if (/<<C>>/.test(full)) qState.current = { ...qState.current, closing: true };
+      else if (/<<F>>/.test(full) || qState.current.asked > 0) qState.current = { ...qState.current, followups: qState.current.followups + 1 };
       const over = /<<(END|ABUSE)>>/.test(full) || elapsedSec > job.settings.durationMin * 60 + 120;
       thenListen(myTurn, over ? () => finish(false) : undefined);
     } catch (e) {
