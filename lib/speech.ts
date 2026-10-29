@@ -91,22 +91,35 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
       speechSynthesis.speak(u);
     });
 
+  let fails = 0;
   const fetchAudio = async (text: string): Promise<string | null> => {
-    try {
-      const r = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        opts.onError?.(r.status === 429 ? "Voice service is rate-limited (429): using the browser voice for now." : `${j.error || "Voice service error"}: using the browser voice for now.`);
-        return null;
-      }
-      return URL.createObjectURL(await r.blob());
-    } catch {
-      return null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 9000);
+      try {
+        const r = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: ac.signal,
+        });
+        if (r.ok) {
+          const blob = await r.blob();
+          clearTimeout(timer);
+          fails = 0;
+          return URL.createObjectURL(blob);
+        }
+        if (r.status === 429) {
+          clearTimeout(timer);
+          opts.onError?.("Voice service is rate-limited (429): using the browser voice for now.");
+          return null;
+        }
+      } catch { /* timeout or network: retry once */ }
+      clearTimeout(timer);
     }
+    // A single hiccup just uses the browser voice for this sentence; only warn if it keeps failing.
+    if (++fails >= 3) opts.onError?.("The natural voice is having trouble, so the browser voice is being used.");
+    return null;
   };
 
   return {
