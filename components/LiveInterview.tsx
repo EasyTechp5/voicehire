@@ -5,6 +5,7 @@ import {
   type Listener, type Speaker,
 } from "@/lib/speech";
 import { createVadListener, serverSttAvailable, type VadListener } from "@/lib/vad";
+import { IdleView, RoomView } from "./RoomView";
 import type { JobLite } from "@/lib/api";
 import type { Turn } from "@/lib/types";
 
@@ -24,7 +25,6 @@ export function LiveInterview({
   const [phase, setPhase] = useState<Phase>("idle");
   const [turnsView, setTurnsView] = useState<Turn[]>([]);
   const [live, setLive] = useState("");
-  const [typed, setTyped] = useState("");
   const [rate, setRate] = useState(1.05);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceURI, setVoiceURI] = useState("");
@@ -56,7 +56,6 @@ export function LiveInterview({
   const finished = useRef(false);
   const failures = useRef(0);
   const turnId = useRef(0);
-  const chatEnd = useRef<HTMLDivElement>(null);
   const canVoice = serverStt === true || sttSupported();
   const canVoiceRef = useRef(false);
   canVoiceRef.current = canVoice;
@@ -71,7 +70,6 @@ export function LiveInterview({
   useEffect(() => { speaker.current?.setRate(rate); }, [rate]);
   useEffect(() => { if (voiceURI) speaker.current?.setVoice(voiceURI); }, [voiceURI]);
   useEffect(() => onVoicesReady(() => setVoices(englishVoices())), []);
-  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [turnsView, live]);
   useEffect(() => {
     const id = setInterval(() => t0.current && setElapsed(Math.round((Date.now() - t0.current) / 1000)), 1000);
     return () => clearInterval(id);
@@ -360,106 +358,38 @@ export function LiveInterview({
     stream.current?.getTracks().forEach((t) => t.stop());
   }, []);
 
-  const mm = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
-  const budget = job.settings.durationMin * 60;
-  const pct = Math.min(100, (elapsed / budget) * 100);
-
   if (phase === "idle")
-    return (
-      <div className="room mx-auto max-w-xl rounded-3xl p-8 text-center text-white sm:p-10">
-        <div className="orb mx-auto mb-6 h-28 w-28" data-state="idle" />
-        <h1 className="text-2xl font-semibold">Your interview is ready</h1>
-        <p className="mx-auto mt-2 max-w-sm text-sm text-slate-300">
-          The interviewer will greet you and ask if you&apos;re ready. Just answer out loud. It takes about {job.settings.durationMin} minutes.
-        </p>
-        <ul className="mx-auto mt-5 max-w-sm space-y-1 text-left text-xs text-slate-400">
-          <li>• Find a quiet spot. Headphones help a lot.</li>
-          <li>• Pause when you&apos;re done and it will respond.</li>
-          <li>• Tap the glowing circle any time to interrupt or finish your answer.</li>
-        </ul>
-        {err && <p className="mt-4 text-sm text-red-300">{err}</p>}
-        <button className="mt-7 w-full rounded-xl bg-white px-6 py-3 font-semibold text-slate-900 transition hover:bg-slate-100" onClick={begin}>
-          Start interview
-        </button>
-      </div>
-    );
-
-  const status: Record<Phase, string> = {
-    idle: "", speaking: "Interviewer is speaking", thinking: "Thinking…", ended: "Wrapping up…",
-    listening: canVoice ? (transcribing ? "Got it, transcribing…" : heard ? "Listening…" : "Your turn — go ahead and speak") : "Your turn — type your answer",
-  };
-  const orbHint =
-    phase === "speaking" ? "Tap to interrupt" : phase === "listening" && live ? "Tap to send now" : phase === "listening" ? "Tap to talk" : "";
+    return <IdleView title={job.title} durationMin={job.settings.durationMin} err={err} onStart={begin} />;
 
   return (
-    <div className="room overflow-hidden rounded-3xl text-white">
-      <div className="h-1 w-full bg-white/10"><div className="h-1 bg-gradient-to-r from-indigo-400 to-fuchsia-400 transition-all" style={{ width: `${pct}%` }} /></div>
-      <div className="flex items-center justify-between px-5 py-3 text-xs text-slate-300">
-        <span className="flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-red-500" /> Recording · {mm} / {job.settings.durationMin}:00</span>
-        <span>{job.title}</span>
-      </div>
-
-      <div className="grid gap-0 lg:grid-cols-[1fr_1.1fr]">
-        <div className="flex flex-col items-center justify-center px-6 py-8">
-          <button
-            aria-label={orbHint || status[phase]}
-            className="orb h-44 w-44 cursor-pointer"
-            data-state={phase}
-            style={{ ["--lvl" as string]: phase === "listening" ? level : 0 }}
-            onClick={() => {
-              if (phase === "speaking") interrupt();
-              else if (phase === "listening" && live) listener.current?.commit();
-              else if (phase === "listening" && canVoice && !alwaysOn.current) { listener.current?.stop(); listener.current?.start(); }
-            }}
-          />
-          <p className="mt-6 text-lg font-medium" aria-live="polite">{status[phase]}</p>
-          <p className="mt-1 h-4 text-xs text-slate-400">{orbHint}</p>
-          {canVoice && phase === "listening" && (
-            <div className="mt-4 flex h-6 items-end gap-1" aria-hidden>
-              {Array.from({ length: 14 }).map((_, i) => (
-                <span key={i} className="w-1 rounded bg-emerald-400/80 transition-all" style={{ height: `${4 + Math.max(0, level * 22 * Math.sin((i / 13) * Math.PI)) }px` }} />
-              ))}
-            </div>
-          )}
-          {err && <p className="mt-4 max-w-xs text-center text-sm text-red-300">{err}</p>}
-        </div>
-
-        <div className="flex h-[26rem] flex-col border-t border-white/10 bg-black/20 lg:h-[30rem] lg:border-l lg:border-t-0">
-          <div className="flex-1 space-y-3 overflow-y-auto p-5" aria-live="polite">
-            {turnsView.map((t, i) => (
-              <div key={i} className={`flex ${t.speaker === "ai" ? "justify-start" : "justify-end"}`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${t.speaker === "ai" ? "rounded-bl-sm bg-white/10" : "rounded-br-sm bg-indigo-500"}`}>{t.text}</div>
-              </div>
-            ))}
-            {live && <div className="flex justify-end"><div className="max-w-[85%] rounded-2xl rounded-br-sm bg-indigo-500/50 px-4 py-2.5 text-sm italic">{live}</div></div>}
-            <div ref={chatEnd} />
-          </div>
-          <form className="flex gap-2 border-t border-white/10 p-3" onSubmit={(e) => { e.preventDefault(); const t = typed.trim(); if (t && phaseRef.current !== "thinking") { setTyped(""); submit(t); } }}>
-            <input className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 outline-none focus:border-indigo-400" placeholder="Or type your answer…" value={typed} onChange={(e) => setTyped(e.target.value)} />
-            <button className="rounded-xl bg-white/15 px-4 text-sm font-medium hover:bg-white/25" type="submit">Send</button>
-          </form>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 px-5 py-3 text-xs text-slate-300">
-        {!natural && voices.length > 0 && (
-          <label className="flex items-center gap-2">Voice
-            <select className="max-w-40 rounded-lg border border-white/15 bg-slate-900 px-2 py-1" value={voiceURI} onChange={(e) => setVoiceURI(e.target.value)}>
-              <option value="">Auto (best)</option>
-              {voices.map((v) => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
-            </select>
-          </label>
-        )}
-        {serverStt && <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-300">HD listening</span>}
-        {natural && <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-300">Natural voice on</span>}
-        <label className="flex items-center gap-2">Speed
-          <select className="rounded-lg border border-white/15 bg-slate-900 px-2 py-1" value={rate} onChange={(e) => setRate(Number(e.target.value))}>
-            {[0.9, 1, 1.05, 1.2, 1.35].map((r) => <option key={r} value={r}>{r}×</option>)}
-          </select>
-        </label>
-        {canVoice && <label className="flex items-center gap-2"><input type="checkbox" checked={headphones} onChange={(e) => setHeadphones(e.target.checked)} /> Let me interrupt the AI (best with headphones)</label>}
-        <button className="ml-auto rounded-lg bg-red-500/90 px-4 py-1.5 font-medium text-white hover:bg-red-500" onClick={() => confirm("End the interview now?") && finish(true)}>End interview</button>
-      </div>
-    </div>
+    <RoomView
+      title={job.title}
+      durationMin={job.settings.durationMin}
+      phase={phase}
+      turns={turnsView}
+      live={live}
+      level={level}
+      elapsed={elapsed}
+      canVoice={canVoice}
+      transcribing={transcribing}
+      heard={heard}
+      natural={natural}
+      serverStt={serverStt === true}
+      voices={voices}
+      voiceURI={voiceURI}
+      rate={rate}
+      headphones={headphones}
+      err={err}
+      onVoice={setVoiceURI}
+      onRate={setRate}
+      onHeadphones={setHeadphones}
+      onOrb={() => {
+        if (phase === "speaking") interrupt();
+        else if (phase === "listening" && live) listener.current?.commit();
+        else if (phase === "listening" && canVoice && !alwaysOn.current) { listener.current?.stop(); listener.current?.start(); }
+      }}
+      onSend={(t) => { if (phaseRef.current === "speaking") interrupt(); if (phaseRef.current !== "thinking") submit(t); }}
+      onEnd={() => finish(true)}
+    />
   );
 }

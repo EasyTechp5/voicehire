@@ -23,6 +23,7 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
+@layer components {
 .btn-primary, .btn-ghost, .btn-danger {
   @apply inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
 }
@@ -32,6 +33,7 @@ body {
 .card { @apply rounded-2xl border border-slate-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]; }
 .input { @apply w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-indigo-200; }
 .label { @apply mb-1 block text-xs font-medium uppercase tracking-wide text-neutral-500; }
+}
 
 /* ---------- Interview room ---------- */
 .room {
@@ -65,6 +67,7 @@ body {
 }
 .gradient-text { background: linear-gradient(90deg, #4f46e5, #c026d3); -webkit-background-clip: text; background-clip: text; color: transparent; }
 
+@layer components {
 /* ---------- UI kit ---------- */
 .badge { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium; }
 .chip { @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600; }
@@ -75,3 +78,10 @@ body {
 .dot-grid { background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 22px 22px; mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%); -webkit-mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%); }
 .input { @apply placeholder:text-slate-400; }
 .btn-ghost, .btn-primary { @apply active:scale-[0.98]; }
+}
+
+.typing { display: inline-flex; gap: 4px; align-items: center; }
+.typing i { width: 6px; height: 6px; border-radius: 9999px; background: currentColor; opacity: 0.4; animation: typing 1.2s infinite ease-in-out; }
+.typing i:nth-child(2) { animation-delay: 0.15s; }
+.typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing { 0%, 80%, 100% { opacity: 0.3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
