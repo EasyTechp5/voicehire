@@ -8,7 +8,9 @@ export async function GET() {
 export async function POST(req: Request) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return Response.json({ error: "TTS not configured" }, { status: 501 });
-  const { text } = await req.json();
+  const { text, format } = await req.json();
+  // "pcm" (24 kHz, 16-bit mono) can be played while it is still being generated; "mp3" is used for the short filler clips.
+  const fmt = format === "mp3" ? "mp3" : "pcm";
   if (!text || String(text).length > 800) return Response.json({ error: "Bad text" }, { status: 400 });
   // tts-1 starts audio much faster than the gpt-4o TTS models; override with TTS_MODEL if you prefer quality.
   const model = process.env.TTS_MODEL || "tts-1";
@@ -16,7 +18,7 @@ export async function POST(req: Request) {
     model,
     voice: process.env.TTS_VOICE || "nova",
     input: String(text),
-    response_format: "mp3",
+    response_format: fmt,
     ...(model.startsWith("gpt-4o")
       ? { instructions: "Warm, calm, professional interviewer. Natural pacing, friendly but neutral." }
       : {}),
@@ -31,7 +33,7 @@ export async function POST(req: Request) {
         body,
         signal: AbortSignal.timeout(ms),
       });
-      if (r.ok && r.body) return new Response(r.body, { headers: { "content-type": "audio/mpeg", "cache-control": "no-store" } });
+      if (r.ok && r.body) return new Response(r.body, { headers: { "content-type": fmt === "mp3" ? "audio/mpeg" : "application/octet-stream", "cache-control": "no-store" } });
       lastStatus = r.status;
       if (r.status === 429) {
         const detail = (await r.text().catch(() => "")).slice(0, 200);

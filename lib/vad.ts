@@ -35,6 +35,8 @@ function toWav16k(frames: Float32Array[], inRate: number): Blob {
   return new Blob([h, pcm], { type: "audio/wav" });
 }
 
+const SPEC_MS = 350;
+
 export type VadListener = Listener & {
   destroy: () => void;
   setSpeaking: (b: boolean) => void;
@@ -73,7 +75,9 @@ export function createVadListener(opts: {
   let epoch = 0;
   let lastFrame = Date.now();
 
-  const reset = () => { inSpeech = false; voiced = 0; hot = 0; silentMs = 0; segMs = 0; seg = []; };
+  // Speculative transcription: start as soon as a short pause begins; keep the result only if the pause lasts.
+  let spec: Promise<string> | null = null;
+  const reset = () => { inSpeech = false; voiced = 0; hot = 0; silentMs = 0; segMs = 0; seg = []; spec = null; };
 
   async function transcribe(wav: Blob): Promise<string> {
     const r = await fetch("/api/stt", { method: "POST", body: wav });
@@ -82,13 +86,16 @@ export function createVadListener(opts: {
     return j.text || "";
   }
 
-  async function send(frames: Float32Array[], myEpoch: number) {
+  const transcribeWithRetry = async (frames: Float32Array[]): Promise<string> => {
+    const wav = toWav16k(frames, ctx.sampleRate);
+    try { return await transcribe(wav); }
+    catch (e) { await new Promise((r) => setTimeout(r, 700)); return transcribe(wav).catch(() => { throw e; }); } // one retry
+  };
+
+  async function send(frames: Float32Array[], myEpoch: number, early?: Promise<string>) {
     opts.onTranscribing?.(true);
     try {
-      const wav = toWav16k(frames, ctx.sampleRate);
-      let text: string;
-      try { text = await transcribe(wav); }
-      catch (e) { await new Promise((r) => setTimeout(r, 700)); text = await transcribe(wav).catch(() => { throw e; }); } // one retry
+      const text = await (early ?? transcribeWithRetry(frames));
       if (myEpoch === epoch && text) opts.onFinal(text);
     } catch (e) {
       opts.onError?.((e as Error).message || "Couldn't transcribe that. Please try again.");
@@ -99,9 +106,10 @@ export function createVadListener(opts: {
 
   const endSegment = () => {
     const frames = seg;
+    const early = spec ?? undefined;
     const enough = voiced * frameMs >= 300;
     reset();
-    if (enough) { opts.onSegmentEnd?.(); send(frames, epoch); }
+    if (enough) { opts.onSegmentEnd?.(); send(frames, epoch, early); }
   };
 
   proc.onaudioprocess = (e) => {
@@ -140,7 +148,13 @@ export function createVadListener(opts: {
     }
     seg.push(copy);
     segMs += frameMs;
-    if (loud) { voiced++; silentMs = 0; } else if (rms < thr * 0.75) silentMs += frameMs;
+    if (loud) { voiced++; silentMs = 0; spec = null; } else if (rms < thr * 0.75) silentMs += frameMs;
+    if (!spec && silentMs >= SPEC_MS && silentMs < opts.pauseMs && voiced * frameMs >= 300) {
+      const snapshot = seg.slice();
+      const p = transcribeWithRetry(snapshot);
+      p.catch(() => {}); // a discarded guess must not surface as an unhandled rejection
+      spec = p;
+    }
     if (silentMs >= opts.pauseMs || segMs > 45000) endSegment();
   };
 

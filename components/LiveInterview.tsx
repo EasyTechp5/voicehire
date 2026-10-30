@@ -238,7 +238,7 @@ export function LiveInterview({
     (listener.current as VadListener | null)?.destroy?.();
     const v = createVadListener({
       stream: s,
-      pauseMs: 750,
+      pauseMs: 700,
       onSpeechStart: () => {
         setHeard(true);
         setLive("…");

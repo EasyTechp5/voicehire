@@ -91,6 +91,109 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
       speechSynthesis.speak(u);
     });
 
+  // ---- Streaming playback: PCM is fetched as a stream and scheduled on a Web Audio clock as it arrives. ----
+  const RATE = 24000;
+  let ac: AudioContext | null = null;
+  let cursor = 0; // audio-clock time at which the next chunk should start
+  let live: AudioBufferSourceNode[] = [];
+  const audioCtx = () => {
+    if (!ac) { try { ac = new AudioContext({ sampleRate: RATE }); } catch { ac = new AudioContext(); } }
+    if (ac.state === "suspended") ac.resume().catch(() => {});
+    return ac;
+  };
+  if (useServer) audioCtx(); // created inside the click handler so playback is allowed
+
+  type Stream = { chunks: Float32Array[]; ended: boolean; failed: boolean; wake?: () => void };
+  const startStream = (text: string): Stream => {
+    const st: Stream = { chunks: [], ended: false, failed: false };
+    const ping = () => { const w = st.wake; st.wake = undefined; w?.(); };
+    (async () => {
+      for (let attempt = 0; attempt < 2 && !st.chunks.length; attempt++) {
+        const ac2 = new AbortController();
+        const first = setTimeout(() => ac2.abort(), 9000);
+        try {
+          const r = await fetch("/api/tts", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text, format: "pcm" }),
+            signal: ac2.signal,
+          });
+          if (r.status === 429) {
+            opts.onError?.("Voice service is rate-limited (429): using the browser voice for now.");
+            break;
+          }
+          if (!r.ok || !r.body) continue;
+          const reader = r.body.getReader();
+          let odd: number | null = null;
+          for (;;) {
+            // Abort if the stream stalls mid-sentence.
+            const idle = setTimeout(() => ac2.abort(), 6000);
+            const { done, value } = await reader.read();
+            clearTimeout(idle);
+            clearTimeout(first);
+            if (done) break;
+            let bytes = value;
+            if (odd !== null) { const m = new Uint8Array(bytes.length + 1); m[0] = odd; m.set(bytes, 1); bytes = m; odd = null; }
+            if (bytes.length % 2) { odd = bytes[bytes.length - 1]; bytes = bytes.subarray(0, bytes.length - 1); }
+            const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+            const f = new Float32Array(bytes.length / 2);
+            for (let i = 0; i < f.length; i++) f[i] = dv.getInt16(i * 2, true) / 32768;
+            if (f.length) { st.chunks.push(f); ping(); }
+          }
+          fails = 0;
+          break;
+        } catch { /* timeout or network: retry once if nothing was received */ }
+        finally { clearTimeout(first); }
+      }
+      if (!st.chunks.length) { st.failed = true; if (++fails >= 3) opts.onError?.("The natural voice is having trouble, so the browser voice is being used."); }
+      st.ended = true;
+      ping();
+    })();
+    return st;
+  };
+
+  // Schedule a stream's audio back to back with whatever is already queued; resolves once it is all scheduled.
+  const scheduleStream = async (st: Stream, myGen: number): Promise<boolean> => {
+    const ctx = audioCtx();
+    let buffered = 0;
+    let started = false;
+    for (;;) {
+      if (myGen !== gen) return true;
+      if (!st.chunks.length) {
+        if (st.ended) break;
+        await new Promise<void>((res) => { st.wake = res; setTimeout(res, 500); });
+        continue;
+      }
+      // Hold back ~120 ms before the first sound so network jitter doesn't cause a stutter.
+      if (!started) {
+        buffered = st.chunks.reduce((n, c) => n + c.length, 0);
+        if (buffered < RATE * 0.12 && !st.ended) { await new Promise<void>((res) => { st.wake = res; setTimeout(res, 150); }); continue; }
+        started = true;
+      }
+      const c = st.chunks.shift()!;
+      const buf = ctx.createBuffer(1, c.length, RATE);
+      buf.copyToChannel(c as Float32Array<ArrayBuffer>, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rate;
+      src.connect(ctx.destination);
+      const at = Math.max(cursor, ctx.currentTime + 0.03);
+      src.start(at);
+      cursor = at + c.length / RATE / rate;
+      live.push(src);
+      src.onended = () => { live = live.filter((s) => s !== src); };
+    }
+    return started;
+  };
+
+  const drain = (myGen: number) =>
+    new Promise<void>((res) => {
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        if (myGen !== gen || !ac || ac.currentTime >= cursor - 0.01 || Date.now() - t0 > 30000) { clearInterval(iv); res(); }
+      }, 40);
+    });
+
   let fails = 0;
   const fetchAudio = async (text: string): Promise<string | null> => {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -100,7 +203,7 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
         const r = await fetch("/api/tts", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, format: "mp3" }),
           signal: ac.signal,
         });
         if (r.ok) {
@@ -141,28 +244,21 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
         fillerEl.play().catch(fin);
       });
     },
-    setRate: (r) => { rate = r; if (el) el.playbackRate = r; },
+    setRate: (r) => { rate = r; for (const src of live) src.playbackRate.value = r; },
     setVoice: (u) => { voiceURI = u; },
     enqueue(text) {
       const myGen = gen;
       pending++;
       if (useServer && el) {
-        const urlP = fetchAudio(text); // start fetching immediately, play in order
+        const st = startStream(text); // start fetching immediately, play in order
         chain = chain.then(async () => {
-          const url = await urlP;
           await fillerP; // let a short "Mm-hm" finish before the real reply
-          if (myGen !== gen) { if (url) URL.revokeObjectURL(url); return done(myGen); }
-          if (!url) { await browserSpeak(text, myGen); return done(myGen); }
-          await new Promise<void>((res) => {
-            el.src = url;
-            el.playbackRate = rate;
-            const guard = setTimeout(res, 20000);
-            const fin = () => { clearTimeout(guard); res(); };
-            el.onended = el.onerror = fin;
-            el.play().catch(fin);
-          });
-          URL.revokeObjectURL(url);
-          done(myGen);
+          if (myGen !== gen) return done(myGen);
+          const ok = await scheduleStream(st, myGen);
+          if (myGen !== gen) return done(myGen);
+          if (!ok || st.failed) { await drain(myGen); await browserSpeak(text, myGen); return done(myGen); }
+          // Next sentence can be scheduled right away (gapless); this one counts as done when it has played.
+          drain(myGen).then(() => done(myGen));
         });
       } else {
         chain = chain.then(async () => { await browserSpeak(text, myGen); done(myGen); });
@@ -172,6 +268,9 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
       gen++;
       speechSynthesis.cancel();
       if (el) { el.onended = null; el.pause(); el.removeAttribute("src"); }
+      for (const src of live) { try { src.onended = null; src.stop(); } catch {} }
+      live = [];
+      cursor = 0;
       if (fillerEl) { fillerEl.onended = null; fillerEl.pause(); }
       fillerP = Promise.resolve();
       chain = Promise.resolve();
