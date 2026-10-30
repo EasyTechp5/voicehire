@@ -2,16 +2,43 @@
 export const maxDuration = 30;
 
 export async function GET() {
-  return Response.json({ available: !!process.env.OPENAI_API_KEY });
+  return Response.json({ available: !!(process.env.DEEPGRAM_API_KEY || process.env.OPENAI_API_KEY) });
+}
+
+// Deepgram Aura answers in a few hundred ms (OpenAI tts-1 has ~1.5s of fixed delay), so prefer it when configured.
+async function deepgram(text: string, fmt: "mp3" | "pcm") {
+  const model = process.env.DEEPGRAM_TTS_MODEL || "aura-2-thalia-en";
+  const q = fmt === "mp3" ? "encoding=mp3" : "encoding=linear16&sample_rate=24000&container=none";
+  for (const ms of [5000, 7000]) {
+    try {
+      const r = await fetch(`https://api.deepgram.com/v1/speak?model=${model}&${q}`, {
+        method: "POST",
+        headers: { authorization: `Token ${process.env.DEEPGRAM_API_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(ms),
+      });
+      if (r.ok && r.body) return r;
+      console.error(`[tts] deepgram status ${r.status}`);
+    } catch {
+      console.error("[tts] deepgram attempt failed");
+    }
+  }
+  return null;
 }
 
 export async function POST(req: Request) {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) return Response.json({ error: "TTS not configured" }, { status: 501 });
+  if (!key && !process.env.DEEPGRAM_API_KEY) return Response.json({ error: "TTS not configured" }, { status: 501 });
   const { text, format } = await req.json();
   // "pcm" (24 kHz, 16-bit mono) can be played while it is still being generated; "mp3" is used for the short filler clips.
   const fmt = format === "mp3" ? "mp3" : "pcm";
   if (!text || String(text).length > 800) return Response.json({ error: "Bad text" }, { status: 400 });
+  const headers = { "content-type": fmt === "mp3" ? "audio/mpeg" : "application/octet-stream", "cache-control": "no-store" };
+  if (process.env.DEEPGRAM_API_KEY) {
+    const r = await deepgram(String(text), fmt);
+    if (r) return new Response(r.body, { headers });
+    if (!key) return Response.json({ error: "Voice service error 502" }, { status: 502 });
+  }
   // tts-1 starts audio much faster than the gpt-4o TTS models; override with TTS_MODEL if you prefer quality.
   const model = process.env.TTS_MODEL || "tts-1";
   const body = JSON.stringify({
