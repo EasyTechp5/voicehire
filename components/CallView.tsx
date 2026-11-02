@@ -6,6 +6,9 @@ import { createVadListener, serverSttAvailable, type VadListener } from "@/lib/v
 type Phase = "idle" | "ringing" | "speaking" | "listening" | "thinking" | "ended";
 type Line = { speaker: "ai" | "caller"; text: string };
 
+const words = (t: string) => t.toLowerCase().replace(/[^a-z0-9' ]/g, " ").split(/\s+/).filter(Boolean);
+const STOP = /\b(stop|wait|hold on|hang on|sorry|actually|no|pause)\b/i;
+
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 // Two short ringback pulses so it feels like placing a call.
@@ -31,6 +34,7 @@ export function CallView() {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [showText, setShowText] = useState(true);
+  const [headphones, setHeadphones] = useState(false);
   const [err, setErr] = useState("");
 
   const phaseRef = useRef<Phase>("idle");
@@ -39,6 +43,8 @@ export function CallView() {
   const vad = useRef<VadListener | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const mutedRef = useRef(false);
+  const hpRef = useRef(false);
+  hpRef.current = headphones;
   const turnId = useRef(0);
   const inflight = useRef<AbortController | null>(null);
   const t0 = useRef(0);
@@ -123,9 +129,23 @@ export function CallView() {
     }
   }, [hangUp]);
 
+  // Does this transcript just repeat what the assistant said? (Its voice leaking back into the mic.)
+  const isEcho = (t: string) => {
+    const w = words(t);
+    if (w.length < 3) return false;
+    const ai = new Set(linesRef.current.filter((l) => l.speaker === "ai").slice(-2).flatMap((l) => words(l.text)));
+    return w.filter((x) => ai.has(x)).length / w.length >= 0.7;
+  };
+
   const heardText = (t: string) => {
     if (mutedRef.current || ended.current) return;
     const ph = phaseRef.current;
+    if (ph === "ringing") return;
+    if (ph === "speaking" || ph === "thinking") {
+      // While the assistant talks or thinks, ignore echo and tiny noises ("yeah", "mm") unless they say stop/wait.
+      if (isEcho(t)) return;
+      if (words(t).length < 3 && !STOP.test(t)) return;
+    }
     if (ph === "speaking") { turnId.current++; speaker.current?.cancel(); }
     if (ph === "thinking") {
       // They kept talking while we were thinking: merge into the previous line and ask again.
@@ -157,7 +177,8 @@ export function CallView() {
     setP("ringing");
     vad.current = createVadListener({
       stream: stream.current, pauseMs: 700,
-      onSpeechStart: () => { if (phaseRef.current === "speaking" && !mutedRef.current) speakInterrupt(); },
+      // With headphones there is no echo, so cut the assistant off the instant they speak; otherwise wait for the transcript.
+      onSpeechStart: () => { if (phaseRef.current === "speaking" && hpRef.current && !mutedRef.current) speakInterrupt(); },
       onSegmentEnd: () => { if (phaseRef.current === "listening") speaker.current?.playFiller(); },
       onFinal: heardText,
       onError: setErr,
@@ -262,12 +283,15 @@ export function CallView() {
           ))}
         </div>
       )}
-      <div className="flex items-center justify-center gap-5">
+      <div className="flex items-center justify-center gap-3 sm:gap-5">
         <button onClick={toggleMute} aria-pressed={muted} className={`grid h-14 w-14 place-items-center rounded-full text-sm font-medium transition ${muted ? "bg-white text-slate-900" : "bg-white/10 hover:bg-white/20"}`}>
           {muted ? "Unmute" : "Mute"}
         </button>
         <button onClick={hangUp} aria-label="End call" className="grid h-16 w-16 place-items-center rounded-full bg-red-500 transition hover:bg-red-400 active:scale-95">
           <PhoneIcon down />
+        </button>
+        <button onClick={() => setHeadphones((h) => !h)} aria-pressed={headphones} title="Turn on if you wear headphones: lets you interrupt instantly" className={`grid h-14 w-14 place-items-center rounded-full text-[11px] font-medium leading-tight transition ${headphones ? "bg-emerald-500" : "bg-white/10 hover:bg-white/20"}`}>
+          Head-<br />phones
         </button>
         <button onClick={() => setShowText((s) => !s)} aria-pressed={showText} className={`grid h-14 w-14 place-items-center rounded-full text-sm font-medium transition ${showText ? "bg-white/20" : "bg-white/10 hover:bg-white/20"}`}>
           CC
