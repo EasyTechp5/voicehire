@@ -37,6 +37,7 @@ export function Header({ area }: { area?: "admin" | "candidate" }) {
           )}
           <Link href="/admin" className={pill(area === "admin")}>Admin</Link>
           <Link href="/interview" className={pill(area === "candidate")}>Candidate</Link>
+          <Link href="/call" className={pill(false)}>Call</Link>
         </nav>
       </div>
     </header>
