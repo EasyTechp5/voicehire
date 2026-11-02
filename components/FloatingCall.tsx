@@ -13,9 +13,9 @@ export function FloatingCall() {
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-3 sm:bottom-6 sm:right-6">
       {open && (
-        <div className="max-h-[85vh] w-[min(24rem,calc(100vw-2rem))] overflow-y-auto rounded-3xl shadow-2xl shadow-black/30">
+        <div className="max-h-[85vh] w-[min(25rem,calc(100vw-2rem))] overflow-y-auto rounded-3xl shadow-2xl shadow-black/40">
           {/* Unmounting hangs up the call and releases the microphone. */}
-          <CallView />
+          <CallView onClose={() => setOpen(false)} />
         </div>
       )}
       <button

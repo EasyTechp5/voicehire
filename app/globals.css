@@ -60,6 +60,11 @@ body {
 @keyframes orb-speak { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
 @keyframes orb-think { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
+.call-pop { animation: call-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2); transform-origin: bottom right; }
+@keyframes call-pop { from { opacity: 0; transform: translateY(12px) scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes bar-bounce { 0%,100% { transform: scaleY(0.6); } 50% { transform: scaleY(1.6); } }
+.call-log { mask-image: linear-gradient(to bottom, transparent 0, #000 14px); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px); }
+
 /* ---------- Marketing polish ---------- */
 .hero-bg {
   background: radial-gradient(900px 400px at 15% -10%, #c7d2fe99, transparent 60%),

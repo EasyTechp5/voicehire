@@ -2,14 +2,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createSpeaker, serverVoiceAvailable, type Speaker } from "@/lib/speech";
 import { createVadListener, serverSttAvailable, type VadListener } from "@/lib/vad";
+import { CallPanel, type CallLine, type CallPhase } from "./CallPanel";
 
-type Phase = "idle" | "ringing" | "speaking" | "listening" | "thinking" | "ended";
-type Line = { speaker: "ai" | "caller"; text: string };
+type Phase = CallPhase;
+type Line = CallLine;
 
 const words = (t: string) => t.toLowerCase().replace(/[^a-z0-9' ]/g, " ").split(/\s+/).filter(Boolean);
 const STOP = /\b(stop|wait|hold on|hang on|sorry|actually|no|pause)\b/i;
-
-const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 // Two short ringback pulses so it feels like placing a call.
 function ring(): Promise<void> {
@@ -26,7 +25,7 @@ function ring(): Promise<void> {
   });
 }
 
-export function CallView() {
+export function CallView({ onClose }: { onClose?: () => void }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [lines, setLines] = useState<Line[]>([]);
   const [context, setContext] = useState("");
@@ -52,7 +51,6 @@ export function CallView() {
   const ctxRef = useRef("");
   const failures = useRef(0);
   const starting = useRef(false);
-  const logRef = useRef<HTMLDivElement>(null);
   ctxRef.current = context;
 
   const setP = (p: Phase) => { phaseRef.current = p; setPhase(p); vad.current?.setSpeaking(p === "speaking"); };
@@ -64,7 +62,6 @@ export function CallView() {
     const id = setInterval(() => { if (t0.current && !ended.current) setElapsed(Math.round((Date.now() - t0.current) / 1000)); }, 1000);
     return () => clearInterval(id);
   }, []);
-  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" }); }, [lines]);
 
   const hangUp = useCallback(() => {
     if (ended.current) return;
@@ -228,91 +225,12 @@ export function CallView() {
 
   useEffect(() => () => { ended.current = true; speaker.current?.cancel(); vad.current?.destroy(); stream.current?.getTracks().forEach((t) => t.stop()); }, []);
 
-  const status =
-    phase === "ringing" ? "Calling…" :
-    muted ? "You're muted" :
-    phase === "speaking" ? "Assistant is speaking" :
-    phase === "thinking" ? "One moment…" :
-    phase === "listening" ? "Listening…" : "";
-
-  if (phase === "idle" || phase === "ended") {
-    return (
-      <div className="room mx-auto max-w-md rounded-3xl p-8 text-center text-white sm:p-10">
-        <div className="orb mx-auto mb-6 h-24 w-24" data-state="idle" />
-        <h1 className="text-2xl font-semibold tracking-tight">{phase === "ended" ? "Call ended" : "Banking & finance support"}</h1>
-        <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-slate-300">
-          {phase === "ended"
-            ? `You were on the line for ${fmt(elapsed)}.`
-            : "Ask about banking, loans, savings, microfinance or anything else, as if phoning a person. Speak whenever you like, and you can interrupt at any time."}
-        </p>
-        {phase === "idle" && (
-          <label className="mt-6 block text-left text-xs font-medium text-slate-300">
-            Which bank or business is this for? <span className="text-slate-500">(optional)</span>
-            <textarea
-              value={context} onChange={(e) => setContext(e.target.value.slice(0, 1500))} rows={3}
-              placeholder="e.g. You support customers of Sunrise Microfinance Bank: savings, group loans and transfers. Branches open 8–4. (Skip it to ask general questions.)"
-              className="mt-1.5 w-full resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-indigo-400 focus:outline-none"
-            />
-          </label>
-        )}
-        {err && <p className="mt-4 text-sm text-red-300">{err}</p>}
-        <button className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-white transition hover:bg-emerald-400 active:scale-[0.99]" onClick={start}>
-          <PhoneIcon /> {phase === "ended" ? "Call again" : "Start call"}
-        </button>
-        <p className="mt-4 text-xs text-slate-400">You&apos;re speaking with an AI. Use headphones for the best experience.</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="room mx-auto flex min-h-[34rem] max-w-md flex-col rounded-3xl p-6 text-white sm:p-8">
-      <div className="text-center">
-        <p className="text-sm font-medium text-slate-300">AI Assistant</p>
-        <p className="mt-0.5 font-mono text-xs text-slate-400">{phase === "ringing" ? "Connecting…" : fmt(elapsed)}</p>
-      </div>
-      <div className="grid flex-1 place-items-center py-6">
-        <div className="text-center">
-          <div
-            className="orb mx-auto h-36 w-36"
-            data-state={phase === "ringing" ? "thinking" : phase}
-            style={phase === "listening" && !muted ? { transform: `scale(${1 + level * 0.18})` } : undefined}
-          />
-          <p className="mt-5 text-sm text-slate-300" aria-live="polite">{status}</p>
-          {err && <p className="mx-auto mt-2 max-w-xs text-xs text-red-300">{err}</p>}
-        </div>
-      </div>
-      {showText && (
-        <div ref={logRef} className="mb-4 max-h-40 space-y-2 overflow-y-auto rounded-2xl bg-white/5 p-3 text-sm">
-          {lines.length === 0 && <p className="text-slate-500">Captions will appear here.</p>}
-          {lines.map((l, i) => (
-            <p key={i} className={l.speaker === "ai" ? "text-slate-200" : "text-indigo-200"}>
-              <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{l.speaker === "ai" ? "Assistant" : "You"}</span>{l.text}
-            </p>
-          ))}
-        </div>
-      )}
-      <div className="flex items-center justify-center gap-3 sm:gap-5">
-        <button onClick={toggleMute} aria-pressed={muted} className={`grid h-14 w-14 place-items-center rounded-full text-sm font-medium transition ${muted ? "bg-white text-slate-900" : "bg-white/10 hover:bg-white/20"}`}>
-          {muted ? "Unmute" : "Mute"}
-        </button>
-        <button onClick={hangUp} aria-label="End call" className="grid h-16 w-16 place-items-center rounded-full bg-red-500 transition hover:bg-red-400 active:scale-95">
-          <PhoneIcon down />
-        </button>
-        <button onClick={() => setHeadphones((h) => !h)} aria-pressed={headphones} title="Turn on if you wear headphones: lets you interrupt instantly" className={`grid h-14 w-14 place-items-center rounded-full text-[11px] font-medium leading-tight transition ${headphones ? "bg-emerald-500" : "bg-white/10 hover:bg-white/20"}`}>
-          Head-<br />phones
-        </button>
-        <button onClick={() => setShowText((s) => !s)} aria-pressed={showText} className={`grid h-14 w-14 place-items-center rounded-full text-sm font-medium transition ${showText ? "bg-white/20" : "bg-white/10 hover:bg-white/20"}`}>
-          CC
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PhoneIcon({ down }: { down?: boolean }) {
-  return (
-    <svg viewBox="0 0 24 24" className={`h-6 w-6 ${down ? "rotate-[135deg]" : ""}`} fill="currentColor" aria-hidden>
-      <path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.6a1 1 0 0 1-.25 1z" />
-    </svg>
+    <CallPanel
+      phase={phase} lines={lines} context={context} muted={muted} headphones={headphones} showText={showText}
+      elapsed={elapsed} level={level} err={err}
+      onContext={(v) => setContext(v.slice(0, 1500))} onStart={start} onHangUp={hangUp} onMute={toggleMute}
+      onHeadphones={() => setHeadphones((h) => !h)} onToggleText={() => setShowText((x) => !x)} onClose={onClose}
+    />
   );
 }
