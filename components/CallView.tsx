@@ -211,7 +211,7 @@ export function CallView() {
     if (ended.current) return;
     t0.current = Date.now();
     const myTurn = ++turnId.current;
-    const greeting = "Hi there, thanks for calling. This is your AI assistant. How can I help you today?";
+    const greeting = "Hi there, thanks for calling. I'm your AI support assistant for banking, finance and microfinance, and you can ask me about anything else too. How can I help you today?";
     add("ai", greeting);
     setP("speaking");
     speaker.current.enqueue(greeting);
@@ -239,18 +239,18 @@ export function CallView() {
     return (
       <div className="room mx-auto max-w-md rounded-3xl p-8 text-center text-white sm:p-10">
         <div className="orb mx-auto mb-6 h-24 w-24" data-state="idle" />
-        <h1 className="text-2xl font-semibold tracking-tight">{phase === "ended" ? "Call ended" : "Talk to our assistant"}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{phase === "ended" ? "Call ended" : "Banking & finance support"}</h1>
         <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-slate-300">
           {phase === "ended"
             ? `You were on the line for ${fmt(elapsed)}.`
-            : "Have a natural voice conversation, just like phoning a person. Speak whenever you like, and you can interrupt at any time."}
+            : "Ask about banking, loans, savings, microfinance or anything else, as if phoning a person. Speak whenever you like, and you can interrupt at any time."}
         </p>
         {phase === "idle" && (
           <label className="mt-6 block text-left text-xs font-medium text-slate-300">
-            What should the assistant help with? <span className="text-slate-500">(optional)</span>
+            Which bank or business is this for? <span className="text-slate-500">(optional)</span>
             <textarea
               value={context} onChange={(e) => setContext(e.target.value.slice(0, 1500))} rows={3}
-              placeholder="e.g. You work for Acme Bikes. Opening hours are 9–5. You can help with orders, repairs and returns."
+              placeholder="e.g. You support customers of Sunrise Microfinance Bank: savings, group loans and transfers. Branches open 8–4. (Skip it to ask general questions.)"
               className="mt-1.5 w-full resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-indigo-400 focus:outline-none"
             />
           </label>
