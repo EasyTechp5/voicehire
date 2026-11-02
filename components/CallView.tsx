@@ -51,6 +51,7 @@ export function CallView() {
   const ended = useRef(false);
   const ctxRef = useRef("");
   const failures = useRef(0);
+  const starting = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   ctxRef.current = context;
 
@@ -68,6 +69,7 @@ export function CallView() {
   const hangUp = useCallback(() => {
     if (ended.current) return;
     ended.current = true;
+    starting.current = false;
     turnId.current++;
     inflight.current?.abort();
     speaker.current?.cancel();
@@ -153,13 +155,18 @@ export function CallView() {
       const last = linesRef.current[linesRef.current.length - 1];
       if (last?.speaker === "caller") { t = `${last.text} ${t}`; linesRef.current = linesRef.current.slice(0, -1); }
     }
+    const prev = linesRef.current[linesRef.current.length - 1];
+    if (prev?.speaker === "caller" && prev.text.trim().toLowerCase() === t.trim().toLowerCase()) return; // duplicate transcript
     add("caller", t);
     respond();
   };
 
   async function start() {
+    if (starting.current) return; // a double tap would otherwise open two calls that talk over each other
+    starting.current = true;
     setErr("");
     if (!(await serverSttAvailable()) || !(await serverVoiceAvailable())) {
+      starting.current = false;
       return setErr("The voice service isn't configured on this server yet.");
     }
     speaker.current = createSpeaker({ server: true, rate: 1.05, onError: setErr });
@@ -168,6 +175,7 @@ export function CallView() {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch {
+      starting.current = false;
       return setErr("Microphone access is needed for a call. Allow it in your browser's address bar and try again.");
     }
     ended.current = false;

@@ -106,9 +106,10 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
   type Stream = { chunks: Float32Array[]; ended: boolean; failed: boolean; wake?: () => void };
   const startStream = (text: string): Stream => {
     const st: Stream = { chunks: [], ended: false, failed: false };
+    let received = false; // chunks get consumed by the player, so track this separately to avoid replaying a sentence on retry
     const ping = () => { const w = st.wake; st.wake = undefined; w?.(); };
     (async () => {
-      for (let attempt = 0; attempt < 2 && !st.chunks.length; attempt++) {
+      for (let attempt = 0; attempt < 2 && !received; attempt++) {
         const ac2 = new AbortController();
         const first = setTimeout(() => ac2.abort(), 9000);
         try {
@@ -138,14 +139,14 @@ export function createSpeaker(opts: { server: boolean; rate: number; voiceURI?: 
             const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
             const f = new Float32Array(bytes.length / 2);
             for (let i = 0; i < f.length; i++) f[i] = dv.getInt16(i * 2, true) / 32768;
-            if (f.length) { st.chunks.push(f); ping(); }
+            if (f.length) { received = true; st.chunks.push(f); ping(); }
           }
           fails = 0;
           break;
         } catch { /* timeout or network: retry once if nothing was received */ }
         finally { clearTimeout(first); }
       }
-      if (!st.chunks.length) { st.failed = true; if (++fails >= 3) opts.onError?.("The natural voice is having trouble, so the browser voice is being used."); }
+      if (!received) { st.failed = true; if (++fails >= 3) opts.onError?.("The natural voice is having trouble, so the browser voice is being used."); }
       st.ended = true;
       ping();
     })();
